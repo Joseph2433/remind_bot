@@ -57,6 +57,18 @@ Tests use `pytest` and live in `tests/`. Name files `test_<module>.py` and tests
 
 History currently uses concise Conventional Commit-style messages, for example `feat: implement lack bot mvp` and `test: define lack bot mvp behavior`. Keep commits scoped and descriptive. Pull requests should include a short summary, test results, configuration impacts, and any security considerations. Link related issues when available.
 
+## Agent Workflow
+
+For future agent work in this repository, follow this sequence:
+
+1. Read and understand the current implementation before proposing changes.
+2. Restate or infer the user's concrete requirement from the latest request.
+3. Plan the next execution step, including files to inspect or edit and expected verification.
+4. Break the plan into small executable steps.
+5. After each completed step, run the relevant verification and create a commit before continuing.
+
+Keep each commit focused on one completed step. If a step is documentation-only, a content review is enough verification; for code changes, run the targeted tests or full `python -m pytest` when practical.
+
 ## Security & Configuration Tips
 
 Never commit `.env`, app secrets, tenant access tokens, webhook secrets, or full task logs. Keep `.env.example` placeholder-only. Notifications must send redacted summaries, not complete stdout/stderr. When changing Lark API behavior, preserve timeouts, safe logging, and token redaction.
