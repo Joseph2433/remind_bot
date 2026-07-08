@@ -1,17 +1,61 @@
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Test, type-checker, and coverage output
 .pytest_cache/
 pytest-cache-files-*/
 .mypy_cache/
+.pyre/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+
+# Packaging and build artifacts
+build/
+dist/
+site/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
 .venv/
 venv/
+env/
+ENV/
+
+# Local configuration and secrets
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Lack Bot runtime state
 .lack-bot/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# Local test/runtime scratch space
 .tmp/
 test-runtime/
-dist/
-build/
-*.egg-info/
+
+# Editor, OS, and tool state
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
