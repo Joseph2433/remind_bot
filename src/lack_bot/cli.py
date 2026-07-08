@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 
 import typer
 import uvicorn
 
-from lack_bot.config import Settings, get_settings
+from lack_bot.config import Settings, build_config_checks, get_settings, public_settings_summary
 from lack_bot.detector import detect_output
 from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 from lack_bot.notifier.lark import LarkBotClient
@@ -56,6 +57,36 @@ def send_test(message: str = typer.Option("hello from lack-bot", "--message", "-
     )
     detection = DetectionResult(status=TaskStatus.SUCCEEDED, tags=["manual_test"])
     _send_with_dedupe(NotificationRequest(task=task, detection=detection), settings)
+
+
+@app.command("config")
+def config_command(json_output: bool = typer.Option(False, "--json", help="Print JSON output.")) -> None:
+    """Show safe configuration diagnostics."""
+    settings = get_settings()
+    checks = build_config_checks(settings)
+    summary = public_settings_summary(settings)
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "settings": summary,
+                    "checks": [check.model_dump() for check in checks],
+                    "ok": all(check.ok for check in checks),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    typer.echo("Lack Bot configuration")
+    for key, value in summary.items():
+        typer.echo(f"{key}: {value}")
+    typer.echo("")
+    typer.echo("Checks")
+    for check in checks:
+        mark = "ok" if check.ok else "missing"
+        typer.echo(f"- {mark}: {check.name} - {check.message}")
 
 
 @app.command()
