@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
+from pathlib import Path
 from collections.abc import Sequence
 
+from pydantic import ValidationError
 import typer
 import uvicorn
 
+from lack_bot.adapters.codex import CodexEvent, codex_event_to_notification
 from lack_bot.config import Settings, build_config_checks, get_settings, public_settings_summary
 from lack_bot.detector import detect_output
 from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
@@ -89,6 +93,31 @@ def config_command(json_output: bool = typer.Option(False, "--json", help="Print
         typer.echo(f"- {mark}: {check.name} - {check.message}")
 
 
+@app.command("codex-event")
+def codex_event(
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Read a Codex event JSON object from a file. Defaults to stdin.",
+    )
+) -> None:
+    """Send a notification from a Codex event JSON payload."""
+    payload = file.read_text(encoding="utf-8") if file else sys.stdin.read()
+    try:
+        request = build_codex_notification_from_json(payload)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    _send_with_dedupe(request, settings)
+
+
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     """Run the optional FastAPI callback server."""
@@ -130,3 +159,17 @@ def _validate_lark_settings(settings: Settings) -> None:
     ]
     if missing:
         raise typer.BadParameter(f"Missing required Lark settings: {', '.join(missing)}")
+
+
+def build_codex_notification_from_json(payload: str) -> NotificationRequest:
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Codex event payload must be valid JSON.") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Codex event payload must be a JSON object.")
+    try:
+        event = CodexEvent.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Codex event payload: {exc}") from exc
+    return codex_event_to_notification(event)
