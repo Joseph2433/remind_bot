@@ -7,6 +7,7 @@ The MVP follows the same practical shape as `ntfy done`: wrap a command, wait fo
 ## Features
 
 - Run a subprocess with `lack-bot run --name "codex task" -- codex`.
+- Send Codex-specific event payloads with `lack-bot codex-event`.
 - Capture stdout, stderr, exit code, and runtime.
 - Detect likely manual-intervention output such as approval prompts, permission prompts, and waiting-for-input messages.
 - Send only a short redacted tail summary, never the full log by default.
@@ -59,6 +60,28 @@ Send a local smoke-test message:
 ```bash
 lack-bot send-test --message "lack-bot smoke test"
 ```
+
+Send a Codex event from a JSON file or stdin:
+
+```bash
+lack-bot codex-event --file codex-event.json
+Get-Content codex-event.json | lack-bot codex-event
+```
+
+Example Codex event payload:
+
+```json
+{
+  "task_name": "codex task",
+  "status": "approval_required",
+  "command": ["codex"],
+  "duration_seconds": 42.5,
+  "output_tail": ["Do you want to allow this command?"],
+  "stderr_tail": []
+}
+```
+
+Supported status aliases include `completed`, `success`, `failed`, `error`, `needs_input`, `approval_required`, and `permission_required`.
 
 Check local configuration without exposing secrets:
 
@@ -126,6 +149,7 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 MVP implemented:
 
 - CLI wrapper
+- Codex event adapter and `lack-bot codex-event`
 - Lark/Feishu self-built app Bot messaging
 - SQLite dedupe and cooldown
 - Output detection and redaction
@@ -139,4 +163,4 @@ Reserved for later:
 - Mobile replies such as continue, cancel, and view details
 - Multi-task daemon mode
 - Redis or Postgres storage backends
-- Dedicated adapters for Codex, Claude Code, build systems, and test runners
+- Dedicated adapters for Claude Code, build systems, and test runners

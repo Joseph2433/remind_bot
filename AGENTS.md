@@ -8,6 +8,7 @@ This repository is a Python 3.11+ `src/`-layout project for Lack Bot, a local La
 - `src/lack_bot/runner.py`: subprocess execution and stdout/stderr tail capture.
 - `src/lack_bot/detector.py`: output status and intervention detection.
 - `src/lack_bot/redaction.py`: sensitive output masking.
+- `src/lack_bot/adapters/`: agent-specific event adapters such as Codex.
 - `src/lack_bot/notifier/`: notification interfaces and Lark OpenAPI client.
 - `src/lack_bot/storage/`: SQLite cooldown/dedupe storage plus future backend interfaces.
 - `src/lack_bot/server/`: FastAPI health, Lark challenge, and structured agent event callbacks.
@@ -31,6 +32,12 @@ Check configuration safely:
 
 ```bash
 lack-bot config --json
+```
+
+Send a Codex event payload:
+
+```bash
+lack-bot codex-event --file codex-event.json
 ```
 
 Run the CLI without installing:
