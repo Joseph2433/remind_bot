@@ -1,4 +1,4 @@
-from lack_bot.redaction import redact_text
+from lark_bot.redaction import redact_text
 
 
 def test_redacts_common_key_value_secrets():

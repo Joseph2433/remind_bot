@@ -4,8 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from lack_bot.detector import detect_output
-from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.detector import detect_output
+from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 
 SUCCESS_STATUSES = {"success", "succeeded", "completed", "complete", "done"}
 FAILED_STATUSES = {"failed", "failure", "error", "errored"}

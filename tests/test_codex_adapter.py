@@ -1,5 +1,5 @@
-from lack_bot.adapters.codex import CodexEvent, codex_event_to_notification
-from lack_bot.models import TaskStatus
+from lark_bot.adapters.codex import CodexEvent, codex_event_to_notification
+from lark_bot.models import TaskStatus
 
 
 def test_codex_adapter_maps_success_event_to_notification():

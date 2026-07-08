@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
-from lack_bot.models import NotificationRequest, ReceiveIdType
-from lack_bot.redaction import redact_text
+from lark_bot.models import NotificationRequest, ReceiveIdType
+from lark_bot.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class LarkBotClient:
         task = request.task
         detection = request.detection
         lines = [
-            f"Lack Bot: {detection.status.value}",
+            f"Lark Bot: {detection.status.value}",
             f"Task: {task.name}",
             f"Source: {task.source}",
             f"Exit code: {task.exit_code}",

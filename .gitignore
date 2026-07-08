@@ -38,8 +38,8 @@ ENV/
 *.key
 *.crt
 
-# Lack Bot runtime state
-.lack-bot/
+# Lark Bot runtime state
+.lark-bot/
 *.sqlite
 *.sqlite3
 *.db

@@ -1,5 +1,5 @@
-from lack_bot.detector import detect_output
-from lack_bot.models import TaskStatus
+from lark_bot.detector import detect_output
+from lark_bot.models import TaskStatus
 
 
 def test_detects_waiting_for_manual_approval_case_insensitively():

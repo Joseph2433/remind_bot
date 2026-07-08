@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from lack_bot.models import DetectionResult, TaskStatus
+from lark_bot.models import DetectionResult, TaskStatus
 
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [

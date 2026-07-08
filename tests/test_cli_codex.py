@@ -1,7 +1,7 @@
 import json
 
-from lack_bot.cli import build_codex_notification_from_json
-from lack_bot.models import TaskStatus
+from lark_bot.cli import build_codex_notification_from_json
+from lark_bot.models import TaskStatus
 
 
 def test_build_codex_notification_from_json_accepts_file_payload_shape():
