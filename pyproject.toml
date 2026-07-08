@@ -28,7 +28,7 @@ lack-bot = "lack_bot.cli:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q -p no:cacheprovider"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lack_bot"]

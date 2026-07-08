@@ -1,0 +1,115 @@
+# Lack Bot
+
+Lack Bot is a local companion service for code agents and command-line jobs. It does not write code, make decisions, or run as an independent agent. It watches a task, summarizes the result, redacts sensitive output, and sends a Lark/Feishu mobile notification through a self-built app Bot.
+
+The MVP follows the same practical shape as `ntfy done`: wrap a command, wait for it to finish, then notify. Apprise, `larksuite/oapi-sdk-python`, and Claude Code Hooks are useful references, but they are not runtime dependencies in this first version.
+
+## Features
+
+- Run a subprocess with `lack-bot run --name "codex task" -- codex`.
+- Capture stdout, stderr, exit code, and runtime.
+- Detect likely manual-intervention output such as approval prompts, permission prompts, and waiting-for-input messages.
+- Send only a short redacted tail summary, never the full log by default.
+- Send Lark/Feishu messages through app ID and app secret using tenant access tokens.
+- Cache access tokens before expiry.
+- Suppress duplicate notifications within a configurable cooldown using SQLite.
+- Provide a FastAPI health endpoint and placeholder Lark event callback.
+
+## Lark/Feishu App Setup
+
+1. Create a self-built app in the Lark/Feishu developer console.
+2. Enable Bot capability for the app.
+3. Copy the app ID and app secret into a local `.env` file.
+4. Add the Bot to the target chat if you send group messages.
+5. Configure the receive ID:
+   - Use `chat_id` for group/private chat targets such as `oc_xxx`.
+   - Use `user_id` or `open_id` for direct user targets.
+6. Grant message permissions, including the relevant `im:message` and `im:message:send_as_bot` permissions for sending as the Bot.
+7. Publish or install the app to the tenant as required by your organization.
+
+Never commit `.env`, app secrets, tenant access tokens, webhook secrets, or copied production logs.
+
+## Configuration
+
+Copy `.env.example` to `.env` and replace the placeholders:
+
+```env
+LACK_BOT_LARK_APP_ID=cli_xxx
+LACK_BOT_LARK_APP_SECRET=replace-with-app-secret
+LACK_BOT_LARK_RECEIVE_ID_TYPE=chat_id
+LACK_BOT_LARK_RECEIVE_ID=oc_xxx
+LACK_BOT_SQLITE_PATH=.lack-bot/lack_bot.sqlite3
+LACK_BOT_COOLDOWN_SECONDS=300
+LACK_BOT_OUTPUT_TAIL_LINES=40
+LACK_BOT_HTTP_TIMEOUT_SECONDS=10
+LACK_BOT_LOG_LEVEL=INFO
+```
+
+## Usage
+
+Install in editable mode for local development:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Send a local smoke-test message:
+
+```bash
+lack-bot send-test --message "lack-bot smoke test"
+```
+
+Wrap a successful command:
+
+```bash
+lack-bot run --name "success smoke" -- python -c "print('ok')"
+```
+
+Wrap a failing command:
+
+```bash
+lack-bot run --name "failure smoke" -- python -c "import sys; print('bad'); sys.exit(2)"
+```
+
+Run the optional API server:
+
+```bash
+lack-bot serve --host 127.0.0.1 --port 8787
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+## Local Lark CLI Verification
+
+`lark-cli` is useful for validating that your app, tenant, permissions, and receive IDs are correct. It is not a Lack Bot runtime dependency. Use it separately to prove the same Bot can send a message before debugging Lack Bot configuration.
+
+## Security Notes
+
+- Notification text is redacted before sending.
+- Only the last configured number of stdout/stderr lines is included.
+- The logger avoids printing secrets, tokens, and request headers.
+- Token values are cached in memory and refreshed before expiry.
+- SQLite notification history stores dedupe metadata, not full command output.
+
+## Roadmap
+
+MVP implemented:
+
+- CLI wrapper
+- Lark/Feishu self-built app Bot messaging
+- SQLite dedupe and cooldown
+- Output detection and redaction
+- FastAPI health/event skeleton
+
+Reserved for later:
+
+- Claude Code Hooks receiver with structured lifecycle events
+- Interactive cards
+- Mobile replies such as continue, cancel, and view details
+- Multi-task daemon mode
+- Redis or Postgres storage backends
+- Dedicated adapters for Codex, Claude Code, build systems, and test runners

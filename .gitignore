@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -9,6 +10,8 @@ htmlcov/
 venv/
 .env
 .lack-bot/
+.tmp/
+test-runtime/
 dist/
 build/
 *.egg-info/
