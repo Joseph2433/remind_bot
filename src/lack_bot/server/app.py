@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from lack_bot.server.agent_events import router as agent_events_router
 from lack_bot.server.lark_events import router as lark_events_router
 
 
@@ -13,6 +14,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(lark_events_router)
+    app.include_router(agent_events_router)
     return app
 
 
