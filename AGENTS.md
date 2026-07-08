@@ -10,7 +10,7 @@ This repository is a Python 3.11+ `src/`-layout project for Lack Bot, a local La
 - `src/lack_bot/redaction.py`: sensitive output masking.
 - `src/lack_bot/notifier/`: notification interfaces and Lark OpenAPI client.
 - `src/lack_bot/storage/`: SQLite cooldown/dedupe storage plus future backend interfaces.
-- `src/lack_bot/server/`: FastAPI health and Lark event callback skeleton.
+- `src/lack_bot/server/`: FastAPI health, Lark challenge, and structured agent event callbacks.
 - `tests/`: pytest coverage for core behavior.
 
 ## Build, Test, and Development Commands
@@ -25,6 +25,12 @@ Run tests:
 
 ```bash
 python -m pytest
+```
+
+Check configuration safely:
+
+```bash
+lack-bot config --json
 ```
 
 Run the CLI without installing:

@@ -13,7 +13,8 @@ The MVP follows the same practical shape as `ntfy done`: wrap a command, wait fo
 - Send Lark/Feishu messages through app ID and app secret using tenant access tokens.
 - Cache access tokens before expiry.
 - Suppress duplicate notifications within a configurable cooldown using SQLite.
-- Provide a FastAPI health endpoint and placeholder Lark event callback.
+- Diagnose local configuration with `lack-bot config`.
+- Provide FastAPI health, Lark challenge, and structured agent event endpoints.
 
 ## Lark/Feishu App Setup
 
@@ -59,6 +60,13 @@ Send a local smoke-test message:
 lack-bot send-test --message "lack-bot smoke test"
 ```
 
+Check local configuration without exposing secrets:
+
+```bash
+lack-bot config
+lack-bot config --json
+```
+
 Wrap a successful command:
 
 ```bash
@@ -83,6 +91,24 @@ Health check:
 curl http://127.0.0.1:8787/health
 ```
 
+Send a structured task event to the local API server:
+
+```bash
+curl -X POST http://127.0.0.1:8787/agent/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "claude code task",
+    "source": "claude_hook",
+    "status": "failed",
+    "exit_code": 2,
+    "duration_seconds": 12.5,
+    "stdout_tail": ["Need user input"],
+    "stderr_tail": ["permission required"]
+  }'
+```
+
+The server also exposes `POST /lark/events` for Lark URL verification challenge responses. Lark business event handling remains minimal in this release.
+
 ## Local Lark CLI Verification
 
 `lark-cli` is useful for validating that your app, tenant, permissions, and receive IDs are correct. It is not a Lack Bot runtime dependency. Use it separately to prove the same Bot can send a message before debugging Lack Bot configuration.
@@ -103,11 +129,12 @@ MVP implemented:
 - Lark/Feishu self-built app Bot messaging
 - SQLite dedupe and cooldown
 - Output detection and redaction
-- FastAPI health/event skeleton
+- Safe configuration diagnostics
+- FastAPI health, Lark challenge, and structured agent event endpoints
 
 Reserved for later:
 
-- Claude Code Hooks receiver with structured lifecycle events
+- Full Claude Code Hooks adapter presets
 - Interactive cards
 - Mobile replies such as continue, cancel, and view details
 - Multi-task daemon mode
