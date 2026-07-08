@@ -63,6 +63,24 @@ Tests use `pytest` and live in `tests/`. Name files `test_<module>.py` and tests
 
 History currently uses concise Conventional Commit-style messages, for example `feat: implement lack bot mvp` and `test: define lack bot mvp behavior`. Keep commits scoped and descriptive. Pull requests should include a short summary, test results, configuration impacts, and any security considerations. Link related issues when available.
 
+## Git Development Workflow
+
+Use `dev` as the integration branch for new work. Before starting a feature, update `dev` and create a focused branch from it:
+
+```bash
+git checkout dev
+git pull origin dev
+git checkout -b feat/<short-topic>
+```
+
+Commit each completed step locally. When the feature is complete, push the feature branch, but do not open or merge the pull request yourself:
+
+```bash
+git push -u origin feat/<short-topic>
+```
+
+The repository owner will create, review, and merge the PR. Keep `master` for stable releases and avoid committing feature work directly to `master`.
+
 ## Agent Workflow
 
 For future agent work in this repository, follow this sequence:
