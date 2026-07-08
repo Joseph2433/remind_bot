@@ -1,0 +1,62 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+This repository is a Python 3.11+ `src/`-layout project for Lack Bot, a local Lark/Feishu notification companion for code-agent tasks.
+
+- `src/lack_bot/cli.py`: Typer CLI entrypoints such as `run`, `send-test`, and `serve`.
+- `src/lack_bot/runner.py`: subprocess execution and stdout/stderr tail capture.
+- `src/lack_bot/detector.py`: output status and intervention detection.
+- `src/lack_bot/redaction.py`: sensitive output masking.
+- `src/lack_bot/notifier/`: notification interfaces and Lark OpenAPI client.
+- `src/lack_bot/storage/`: SQLite cooldown/dedupe storage plus future backend interfaces.
+- `src/lack_bot/server/`: FastAPI health and Lark event callback skeleton.
+- `tests/`: pytest coverage for core behavior.
+
+## Build, Test, and Development Commands
+
+Install locally:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Run tests:
+
+```bash
+python -m pytest
+```
+
+Run the CLI without installing:
+
+```bash
+$env:PYTHONPATH="src"; python -m lack_bot --help
+```
+
+Smoke-test a wrapped command:
+
+```bash
+lack-bot run --name "success smoke" -- python -c "print('ok')"
+```
+
+Start the optional API server:
+
+```bash
+lack-bot serve --host 127.0.0.1 --port 8787
+```
+
+## Coding Style & Naming Conventions
+
+Use 4-space indentation, type hints, and focused modules with single responsibilities. Prefer small functions and explicit Pydantic models for external-facing data. Module and function names use `snake_case`; classes use `PascalCase`; constants use `UPPER_SNAKE_CASE`. Keep security-sensitive code explicit and easy to audit.
+
+## Testing Guidelines
+
+Tests use `pytest` and live in `tests/`. Name files `test_<module>.py` and tests `test_<behavior>()`. Add or update tests for every behavior change, especially detection, redaction, notification payloads, storage cooldowns, and CLI behavior. Avoid real network calls in tests; inject clients or test payload construction directly.
+
+## Commit & Pull Request Guidelines
+
+History currently uses concise Conventional Commit-style messages, for example `feat: implement lack bot mvp` and `test: define lack bot mvp behavior`. Keep commits scoped and descriptive. Pull requests should include a short summary, test results, configuration impacts, and any security considerations. Link related issues when available.
+
+## Security & Configuration Tips
+
+Never commit `.env`, app secrets, tenant access tokens, webhook secrets, or full task logs. Keep `.env.example` placeholder-only. Notifications must send redacted summaries, not complete stdout/stderr. When changing Lark API behavior, preserve timeouts, safe logging, and token redaction.
