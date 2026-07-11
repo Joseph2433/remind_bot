@@ -81,7 +81,7 @@ Example Codex event payload:
 }
 ```
 
-Supported status aliases include `completed`, `success`, `failed`, `error`, `needs_input`, `approval_required`, and `permission_required`.
+Supported terminal status aliases include `completed`, `success`, `failed`, `error`, `needs_input`, `approval_required`, and `permission_required`. Intermediate values such as `running` or `in_progress` are rejected instead of being treated as failures. When `exit_code` is omitted, waiting/success default to `0` and failures default to `1`. A success alias with a non-zero `exit_code` is treated as failed.
 
 Check local configuration without exposing secrets:
 

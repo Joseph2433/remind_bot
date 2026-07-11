@@ -25,3 +25,13 @@ def test_build_codex_notification_from_json_rejects_non_object_payload():
         assert "JSON object" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_build_codex_notification_from_json_rejects_progress_status():
+    payload = {"name": "mid", "status": "in_progress"}
+    try:
+        build_codex_notification_from_json(json.dumps(payload))
+    except ValueError as exc:
+        assert "Unsupported Codex status" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

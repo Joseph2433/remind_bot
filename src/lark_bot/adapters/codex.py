@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from lark_bot.detector import detect_output
+from lark_bot.detector import dedupe_tags, detect_output
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 
 SUCCESS_STATUSES = {"success", "succeeded", "completed", "complete", "done"}
@@ -50,6 +50,8 @@ class CodexEvent(BaseModel):
 def codex_event_to_notification(event: CodexEvent) -> NotificationRequest:
     status = _normalize_status(event.status)
     exit_code = _event_exit_code(event, status)
+    if status is TaskStatus.SUCCEEDED and exit_code != 0:
+        status = TaskStatus.FAILED
     task = TaskResult(
         name=event.task_name,
         command=event.command,
@@ -65,14 +67,30 @@ def codex_event_to_notification(event: CodexEvent) -> NotificationRequest:
 
 def _codex_detection(event: CodexEvent, task: TaskResult, status: TaskStatus) -> DetectionResult:
     detected = detect_output(task.combined_tail_text, task.exit_code)
-    tags = _dedupe(["codex", *event.tags])
-    if status is TaskStatus.WAITING_FOR_INPUT or detected.status is TaskStatus.WAITING_FOR_INPUT:
+    tags = dedupe_tags(["codex", *event.tags])
+
+    # Explicit waiting status wins; only keep phrase tags when output also looks waiting.
+    if status is TaskStatus.WAITING_FOR_INPUT:
+        if detected.status is TaskStatus.WAITING_FOR_INPUT:
+            return DetectionResult(
+                status=TaskStatus.WAITING_FOR_INPUT,
+                tags=dedupe_tags([*tags, *detected.tags]),
+                matched_phrases=detected.matched_phrases,
+            )
         return DetectionResult(
             status=TaskStatus.WAITING_FOR_INPUT,
-            tags=_dedupe([*tags, *detected.tags]),
+            tags=dedupe_tags([*tags, TaskStatus.WAITING_FOR_INPUT.value]),
+        )
+
+    # Output-based waiting can still elevate success/failure terminals (approval prompts).
+    if detected.status is TaskStatus.WAITING_FOR_INPUT:
+        return DetectionResult(
+            status=TaskStatus.WAITING_FOR_INPUT,
+            tags=dedupe_tags([*tags, *detected.tags]),
             matched_phrases=detected.matched_phrases,
         )
-    return DetectionResult(status=status, tags=_dedupe([*tags, status.value]))
+
+    return DetectionResult(status=status, tags=dedupe_tags([*tags, status.value]))
 
 
 def _normalize_status(status: str) -> TaskStatus:
@@ -83,20 +101,15 @@ def _normalize_status(status: str) -> TaskStatus:
         return TaskStatus.WAITING_FOR_INPUT
     if value in FAILED_STATUSES:
         return TaskStatus.FAILED
-    return TaskStatus.FAILED
+    raise ValueError(
+        f"Unsupported Codex status: {status!r}. "
+        "Use a terminal alias such as completed, failed, or approval_required."
+    )
 
 
 def _event_exit_code(event: CodexEvent, status: TaskStatus) -> int:
     if event.exit_code is not None:
         return event.exit_code
-    return 0 if status is TaskStatus.SUCCEEDED else 1
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
+    if status is TaskStatus.FAILED:
+        return 1
+    return 0
