@@ -317,6 +317,8 @@ def test_create_get_and_attach_message_to_pending_interaction():
     stored = store.get_interaction(interaction.id)
     assert stored is not None
     assert stored.lark_message_id == "message-1"
+    assert store.get_pending_interaction_by_lark_message_id("message-1") == stored
+    assert store.get_pending_interaction_by_lark_message_id("missing") is None
     assert not store.attach_lark_message_id(interaction.id, "message-hijack")
     assert store.get_interaction(interaction.id).lark_message_id == "message-1"
     assert not store.attach_lark_message_id("missing", "message-2")
@@ -349,6 +351,7 @@ def test_first_pending_interaction_resolver_wins_without_overwrite():
     assert stored.actor_id == "user-1"
     assert stored.resolved_at == first_resolution
     assert store.get_pending_interaction(interaction.request_id) is None
+    assert store.get_pending_interaction_by_lark_message_id("message-1") is None
 
 
 def test_expire_interaction_is_pending_only_and_first_transition_wins():

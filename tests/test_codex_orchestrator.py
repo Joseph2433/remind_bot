@@ -354,6 +354,24 @@ def test_user_input_validation_happens_before_claim_and_raw_answers_stay_memory_
     run(scenario())
 
 
+def test_user_input_question_ids_are_available_only_while_live():
+    async def scenario():
+        orchestrator, _, _, _ = make_orchestrator("session-1", "interaction-1")
+        await create_running_session(orchestrator)
+        await orchestrator.process_server_request(ServerRequest(
+            "rpc-input", "item/tool/requestUserInput",
+            {"threadId": "thread-1", "questions": [{"id": "q1"}, {"id": "q2"}]},
+        ))
+        assert orchestrator.get_user_input_question_ids("interaction-1") == ("q1", "q2")
+        assert orchestrator.get_user_input_question_ids("missing") == ()
+        await orchestrator.resolve_interaction(
+            "interaction-1", "user", answers={"q1": "a", "q2": "b"}
+        )
+        assert orchestrator.get_user_input_question_ids("interaction-1") == ()
+
+    run(scenario())
+
+
 def test_response_failure_after_claim_interrupts_session_once():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator("session-1", "interaction-1")

@@ -286,6 +286,23 @@ class CodexOrchestrator:
             )
         return True
 
+    def get_user_input_question_ids(self, interaction_id: str) -> tuple[str, ...]:
+        live = self._live.get(interaction_id)
+        if live is None or live.interaction.kind is not InteractionKind.USER_INPUT:
+            return ()
+        questions = live.request.params.get("questions")
+        if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
+            return ()
+        question_ids: list[str] = []
+        for question in questions:
+            if not isinstance(question, Mapping):
+                return ()
+            question_id = question.get("id")
+            if not isinstance(question_id, str) or not question_id:
+                return ()
+            question_ids.append(question_id)
+        return tuple(question_ids)
+
     async def process_notification(self, notification: ServerNotification) -> None:
         if notification.method == "item/completed":
             self._remember_final_text(notification.params)

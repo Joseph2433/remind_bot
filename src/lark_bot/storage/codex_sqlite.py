@@ -299,6 +299,21 @@ class SQLiteCodexStore:
             ).fetchone()
         return _interaction_from_row(row) if row is not None else None
 
+    def get_pending_interaction_by_lark_message_id(
+        self, message_id: str
+    ) -> PendingInteraction | None:
+        if not message_id:
+            return None
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM codex_interactions
+                WHERE lark_message_id = ? AND status = ?
+                """,
+                (message_id, InteractionStatus.PENDING.value),
+            ).fetchone()
+        return _interaction_from_row(row) if row is not None else None
+
     def attach_lark_message_id(
         self,
         interaction_id: str,
