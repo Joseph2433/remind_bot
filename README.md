@@ -2,7 +2,7 @@
 
 Lark Bot is a local companion service for code agents and command-line jobs. It does not write code, make decisions, or run as an independent agent. It watches a task, summarizes the result, redacts sensitive output, and sends a Lark/Feishu mobile notification through a self-built app Bot.
 
-The MVP follows the same practical shape as `ntfy done`: wrap a command, wait for it to finish, then notify. Apprise, `larksuite/oapi-sdk-python`, and Claude Code Hooks are useful references, but they are not runtime dependencies in this first version.
+The original MVP follows the same practical shape as `ntfy done`: wrap a command, wait for it to finish, then notify. The Codex automation daemon extends that foundation with managed app-server sessions and a bidirectional Lark approval/input loop.
 
 ## Features
 
@@ -16,6 +16,9 @@ The MVP follows the same practical shape as `ntfy done`: wrap a command, wait fo
 - Suppress duplicate notifications within a configurable cooldown using SQLite.
 - Diagnose local configuration with `lark-bot config`.
 - Provide FastAPI health, Lark challenge, and structured agent event endpoints.
+- Run managed Codex sessions through a local authenticated daemon.
+- Approve or deny Codex requests with Lark reactions and answer questions by replying to the notification.
+- Install project-level Codex hooks for one-way notifications from ordinary Codex sessions.
 
 ## Lark/Feishu App Setup
 
@@ -27,7 +30,8 @@ The MVP follows the same practical shape as `ntfy done`: wrap a command, wait fo
    - Use `chat_id` for group/private chat targets such as `oc_xxx`.
    - Use `user_id` or `open_id` for direct user targets.
 6. Grant message permissions, including the relevant `im:message` and `im:message:send_as_bot` permissions for sending as the Bot.
-7. Publish or install the app to the tenant as required by your organization.
+7. For daemon control, enable the `im.message.receive_v1` and `im.message.reaction.created_v1` events and the matching message/reaction read scopes. Group replies must mention the Bot.
+8. Publish or install the app to the tenant as required by your organization.
 
 Never commit `.env`, app secrets, tenant access tokens, webhook secrets, or copied production logs.
 
@@ -45,6 +49,14 @@ LARK_BOT_COOLDOWN_SECONDS=300
 LARK_BOT_OUTPUT_TAIL_LINES=40
 LARK_BOT_HTTP_TIMEOUT_SECONDS=10
 LARK_BOT_LOG_LEVEL=INFO
+LARK_BOT_DAEMON_HOST=127.0.0.1
+LARK_BOT_DAEMON_PORT=8787
+LARK_BOT_DAEMON_TOKEN_PATH=.lark-bot/daemon.token
+LARK_BOT_CODEX_PATH=codex
+LARK_BOT_INTERACTION_TIMEOUT_SECONDS=1800
+LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
+LARK_BOT_OUTBOX_POLL_SECONDS=0.5
+LARK_BOT_LARK_EVENT_QUEUE_CAPACITY=100
 ```
 
 ## Usage
@@ -89,6 +101,37 @@ Check local configuration without exposing secrets:
 lark-bot config
 lark-bot config --json
 ```
+
+### Managed Codex automation
+
+Start the local daemon. It binds to loopback by default and creates a private bearer token under `.lark-bot/`:
+
+```bash
+lark-bot daemon
+```
+
+Start and inspect managed tasks from another terminal:
+
+```bash
+lark-bot codex start --name "implement feature" --cwd . "Implement the requested feature"
+lark-bot codex list
+lark-bot codex show SESSION_ID
+lark-bot codex cancel SESSION_ID
+```
+
+Use `-` as the prompt to read it from stdin. Managed sessions always use `approvalPolicy=on-request`; supported sandboxes are `read-only` and `workspace-write`.
+
+When Codex needs approval, react to the exact Bot notification with 👍 to allow or 👎 to deny. For `request_user_input`, reply to the exact notification; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+
+Install one-way hooks for ordinary Codex sessions:
+
+```bash
+lark-bot codex hooks install --project .
+lark-bot codex hooks check --project .
+lark-bot codex hooks uninstall --project .
+```
+
+The installer merges `.codex/hooks.json` without replacing unrelated hooks. If the daemon is unavailable, `codex-hook` stores only a small sanitized event under `.lark-bot/spool/` for later delivery.
 
 Wrap a successful command:
 
@@ -143,6 +186,9 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 - The logger avoids printing secrets, tokens, and request headers.
 - Token values are cached in memory and refreshed before expiry.
 - SQLite notification history stores dedupe metadata, not full command output.
+- The daemon API is loopback-only by default and requires a generated bearer token.
+- Full prompts, full agent output, Lark tokens, and raw user replies are not persisted.
+- Approvals apply only to the current request or turn; persistent and session-wide approval rules are not created.
 
 ## Roadmap
 
@@ -155,12 +201,13 @@ MVP implemented:
 - Output detection and redaction
 - Safe configuration diagnostics
 - FastAPI health, Lark challenge, and structured agent event endpoints
+- Codex app-server harness and transactional session state machine
+- Lark long-connection reaction/reply control
+- Authenticated local daemon, durable outbox, timeout handling, and project Codex hooks
 
 Reserved for later:
 
-- Full Claude Code Hooks adapter presets
 - Interactive cards
-- Mobile replies such as continue, cancel, and view details
-- Multi-task daemon mode
+- Direct mobile task creation and richer task detail views
 - Redis or Postgres storage backends
 - Dedicated adapters for Claude Code, build systems, and test runners
