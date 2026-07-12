@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from lark_bot import __version__
+from lark_bot import codex_app_server
 from lark_bot.codex_app_server import (
     CodexAppServerClient,
     ProcessExitedError,
@@ -20,6 +21,29 @@ from lark_bot.codex_app_server import (
     permission_response,
     user_input_response,
 )
+
+
+def test_default_process_factory_resolves_windows_command_shim(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    sentinel = object()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(codex_app_server.shutil, "which", lambda value: "C:/tools/codex.cmd")
+    monkeypatch.setattr(
+        codex_app_server.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = asyncio.run(
+        codex_app_server._default_process_factory("codex", "app-server", stdin=-1)
+    )
+
+    assert result is sentinel
+    assert calls == [(("C:/tools/codex.cmd", "app-server"), {"stdin": -1})]
 
 
 class FakeReader:
@@ -553,6 +577,42 @@ def test_protocol_failure_fails_pending_requests(bad_line: bytes) -> None:
         with pytest.raises(ProtocolError):
             await pending
         assert client.pending_request_count == 0
+        await client.close()
+
+    run(scenario())
+
+
+def test_response_without_jsonrpc_version_is_accepted() -> None:
+    async def scenario() -> None:
+        process = FakeProcess(auto_initialize=False)
+        client = CodexAppServerClient(process_factory=FakeFactory(process))
+        startup = asyncio.create_task(client.start())
+        await wait_for_message_count(process.stdin, 1)
+
+        request = process.stdin.messages[-1]
+        process.stdout.feed_json(
+            {"id": request["id"], "result": {"platformFamily": "windows"}}
+        )
+
+        await startup
+        assert client.is_running is True
+        await client.close()
+
+    run(scenario())
+
+
+def test_explicit_invalid_jsonrpc_version_is_rejected() -> None:
+    async def scenario() -> None:
+        process = FakeProcess()
+        client = CodexAppServerClient(process_factory=FakeFactory(process))
+        await client.start()
+
+        process.stdout.feed_json(
+            {"jsonrpc": "1.0", "method": "turn/completed", "params": {}}
+        )
+
+        with pytest.raises(ProtocolError, match="invalid JSON-RPC envelope"):
+            await asyncio.wait_for(client.wait_closed(), 0.1)
         await client.close()
 
     run(scenario())

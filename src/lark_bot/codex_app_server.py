@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -92,7 +93,13 @@ ProcessFactory = Callable[..., Awaitable[_Process]]
 
 
 async def _default_process_factory(*args: object, **kwargs: object) -> _Process:
-    return await asyncio.create_subprocess_exec(*args, **kwargs)  # type: ignore[arg-type, return-value]
+    command = list(args)
+    if command and isinstance(command[0], str):
+        command[0] = shutil.which(command[0]) or command[0]
+    return await asyncio.create_subprocess_exec(  # type: ignore[arg-type, return-value]
+        *command,
+        **kwargs,
+    )
 
 
 def command_approval_response(allow: bool) -> dict[str, str]:
@@ -493,7 +500,9 @@ class CodexAppServerClient:
             await self._record_terminal_error(exc)
 
     def _handle_envelope(self, envelope: object) -> None:
-        if not isinstance(envelope, dict) or envelope.get("jsonrpc") != "2.0":
+        if not isinstance(envelope, dict) or (
+            "jsonrpc" in envelope and envelope["jsonrpc"] != "2.0"
+        ):
             raise ProtocolError("invalid JSON-RPC envelope")
 
         has_id = "id" in envelope
