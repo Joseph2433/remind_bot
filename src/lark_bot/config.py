@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from lack_bot.models import ReceiveIdType
+from lark_bot.models import ReceiveIdType
 
 
 class ConfigCheck(BaseModel):
@@ -16,7 +16,7 @@ class ConfigCheck(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="LACK_BOT_",
+        env_prefix="LARK_BOT_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     lark_app_secret: str = ""
     lark_receive_id_type: ReceiveIdType = "chat_id"
     lark_receive_id: str = ""
-    sqlite_path: Path = Path(".lack-bot/lack_bot.sqlite3")
+    sqlite_path: Path = Path(".lark-bot/lark_bot.sqlite3")
     cooldown_seconds: int = Field(default=300, ge=0)
     output_tail_lines: int = Field(default=40, ge=1)
     http_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -40,16 +40,16 @@ def get_settings() -> Settings:
 
 def build_config_checks(settings: Settings) -> list[ConfigCheck]:
     checks = [
-        _required_check("lark_app_id", settings.lark_app_id, "LACK_BOT_LARK_APP_ID is required."),
+        _required_check("lark_app_id", settings.lark_app_id, "LARK_BOT_LARK_APP_ID is required."),
         _required_check(
             "lark_app_secret",
             settings.lark_app_secret,
-            "LACK_BOT_LARK_APP_SECRET is required.",
+            "LARK_BOT_LARK_APP_SECRET is required.",
         ),
         _required_check(
             "lark_receive_id",
             settings.lark_receive_id,
-            "LACK_BOT_LARK_RECEIVE_ID is required.",
+            "LARK_BOT_LARK_RECEIVE_ID is required.",
         ),
         ConfigCheck(
             name="lark_receive_id_type",

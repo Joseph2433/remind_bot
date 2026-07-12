@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from lack_bot.models import NotificationRequest, TaskStatus
-from lack_bot.server.app import create_app
+from lark_bot.models import NotificationRequest, TaskStatus
+from lark_bot.server.app import create_app
 
 
 class RecordingNotifier:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from lack_bot.config import Settings, build_config_checks, public_settings_summary
+from lark_bot.config import Settings, build_config_checks, public_settings_summary
 
 
 def test_build_config_checks_reports_missing_required_lark_values():
@@ -8,7 +8,7 @@ def test_build_config_checks_reports_missing_required_lark_values():
         lark_app_id="",
         lark_app_secret="",
         lark_receive_id="",
-        sqlite_path=Path(".lack-bot/test.sqlite3"),
+        sqlite_path=Path(".lark-bot/test.sqlite3"),
     )
 
     checks = build_config_checks(settings)

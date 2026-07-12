@@ -1,7 +1,7 @@
 import json
 
-from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
-from lack_bot.notifier.lark import LarkBotClient, build_text_message
+from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.notifier.lark import LarkBotClient, build_text_message
 
 
 def test_build_text_message_uses_receive_id_and_json_content():

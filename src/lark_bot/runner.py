@@ -5,7 +5,7 @@ import time
 from collections import deque
 from collections.abc import Sequence
 
-from lack_bot.models import TaskResult
+from lark_bot.models import TaskResult
 
 
 def run_command(command: Sequence[str], name: str, tail_lines: int = 40) -> TaskResult:

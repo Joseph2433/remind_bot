@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from lack_bot.storage.sqlite import SQLiteNotificationStore
+from lark_bot.storage.sqlite import SQLiteNotificationStore
 
 
 def test_sqlite_store_suppresses_duplicate_within_cooldown():
