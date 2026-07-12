@@ -23,7 +23,19 @@ from lark_bot.redaction import redact_text
 
 _UNSET = object()
 _SUMMARY_LIMIT = 2000
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_ACTIVE_SESSION_STATUSES = (
+    SessionStatus.STARTING,
+    SessionStatus.RUNNING,
+    SessionStatus.WAITING_FOR_APPROVAL,
+    SessionStatus.WAITING_FOR_INPUT,
+)
+_TERMINAL_SESSION_STATUSES = (
+    SessionStatus.SUCCEEDED,
+    SessionStatus.FAILED,
+    SessionStatus.INTERRUPTED,
+    SessionStatus.CANCELLED,
+)
 _ALLOWED_DECISIONS = {
     InteractionKind.EXEC_APPROVAL: frozenset(
         (InteractionDecision.APPROVED, InteractionDecision.DENIED)
@@ -81,6 +93,14 @@ class SQLiteCodexStore:
             ).fetchone()
         return _session_from_row(row) if row is not None else None
 
+    def get_session_by_thread(self, thread_id: str) -> CodexSession | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM codex_sessions WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        return _session_from_row(row) if row is not None else None
+
     def list_sessions(
         self,
         status: SessionStatus | None = None,
@@ -131,6 +151,45 @@ class SQLiteCodexStore:
             )
         return self.get_session(session_id)
 
+    def update_session_if_status(
+        self,
+        session_id: str,
+        expected_statuses: tuple[SessionStatus, ...],
+        *,
+        status: SessionStatus,
+        thread_id: str | None | object = _UNSET,
+        turn_id: str | None | object = _UNSET,
+        summary: str | None = None,
+        updated_at: datetime | None = None,
+    ) -> bool:
+        normalized_expected = tuple(SessionStatus(value) for value in expected_statuses)
+        if not normalized_expected:
+            return False
+        assignments = ["status = ?"]
+        parameters: list[object] = [SessionStatus(status).value]
+        if thread_id is not _UNSET:
+            assignments.append("thread_id = ?")
+            parameters.append(thread_id)
+        if turn_id is not _UNSET:
+            assignments.append("turn_id = ?")
+            parameters.append(turn_id)
+        if summary is not None:
+            assignments.append("summary = ?")
+            parameters.append(_safe_summary(summary))
+        assignments.append("updated_at = ?")
+        parameters.append(_serialize_datetime(updated_at or datetime.now(timezone.utc)))
+        placeholders = ", ".join("?" for _ in normalized_expected)
+        parameters.extend((session_id, *(value.value for value in normalized_expected)))
+        with self._connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE codex_sessions SET {', '.join(assignments)}
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                parameters,
+            )
+        return cursor.rowcount == 1
+
     def create_interaction(self, interaction: PendingInteraction) -> None:
         interaction_status = InteractionStatus(interaction.status)
         if interaction_status is InteractionStatus.PENDING and any(
@@ -171,6 +230,52 @@ class SQLiteCodexStore:
                     ),
                 ),
             )
+
+    def create_interaction_and_mark_waiting(
+        self,
+        interaction: PendingInteraction,
+        waiting_status: SessionStatus,
+        updated_at: datetime,
+    ) -> bool:
+        waiting_status = SessionStatus(waiting_status)
+        if waiting_status not in {
+            SessionStatus.WAITING_FOR_APPROVAL,
+            SessionStatus.WAITING_FOR_INPUT,
+        }:
+            raise ValueError("waiting_status must be a waiting session status")
+        interaction = PendingInteraction.model_validate(interaction.model_dump())
+        active_values = tuple(status.value for status in _ACTIVE_SESSION_STATUSES)
+        placeholders = ", ".join("?" for _ in active_values)
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    f"""
+                    UPDATE codex_sessions SET status = ?, updated_at = ?
+                    WHERE id = ? AND status IN ({placeholders})
+                    """,
+                    (
+                        waiting_status.value,
+                        _serialize_datetime(updated_at),
+                        interaction.session_id,
+                        *active_values,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return False
+                connection.execute(
+                    """
+                    INSERT INTO codex_interactions (
+                        id, session_id, request_id, kind, status, lark_message_id,
+                        payload_summary, requested_at, resolved_at, expires_at,
+                        actor_id, decision
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _interaction_values(interaction),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
 
     def get_interaction(self, interaction_id: str) -> PendingInteraction | None:
         with self._connection() as connection:
@@ -241,6 +346,195 @@ class SQLiteCodexStore:
                 ),
             )
         return cursor.rowcount == 1
+
+    def resolve_interaction_and_refresh_session(
+        self,
+        interaction_id: str,
+        *,
+        decision: str,
+        actor_id: str,
+        updated_at: datetime,
+        status: InteractionStatus = InteractionStatus.RESOLVED,
+    ) -> bool:
+        status = InteractionStatus(status)
+        if status not in {InteractionStatus.RESOLVED, InteractionStatus.EXPIRED}:
+            raise ValueError("status must be resolved or expired")
+        timestamp = _serialize_datetime(updated_at)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT kind, session_id FROM codex_interactions WHERE id = ?",
+                (interaction_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            normalized_decision = _normalize_decision(row["kind"], decision)
+            cursor = connection.execute(
+                """
+                UPDATE codex_interactions
+                SET status = ?, decision = ?, actor_id = ?, resolved_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    status.value,
+                    normalized_decision.value,
+                    actor_id,
+                    timestamp,
+                    interaction_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            pending_kinds = {
+                InteractionKind(pending["kind"])
+                for pending in connection.execute(
+                    """
+                    SELECT kind FROM codex_interactions
+                    WHERE session_id = ? AND status = ?
+                    """,
+                    (row["session_id"], InteractionStatus.PENDING.value),
+                ).fetchall()
+            }
+            if InteractionKind.USER_INPUT in pending_kinds:
+                next_status = SessionStatus.WAITING_FOR_INPUT
+            elif pending_kinds:
+                next_status = SessionStatus.WAITING_FOR_APPROVAL
+            else:
+                next_status = SessionStatus.RUNNING
+            active_values = tuple(value.value for value in _ACTIVE_SESSION_STATUSES)
+            placeholders = ", ".join("?" for _ in active_values)
+            connection.execute(
+                f"""
+                UPDATE codex_sessions SET status = ?, updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (next_status.value, timestamp, row["session_id"], *active_values),
+            )
+        return True
+
+    def claim_session_terminal(
+        self,
+        session_id: str,
+        terminal_status: SessionStatus,
+        summary: str,
+        pending_status: InteractionStatus,
+        updated_at: datetime,
+    ) -> list[str] | None:
+        terminal_status = SessionStatus(terminal_status)
+        if terminal_status not in _TERMINAL_SESSION_STATUSES:
+            raise ValueError("terminal_status must be terminal")
+        pending_status = InteractionStatus(pending_status)
+        if pending_status not in {
+            InteractionStatus.EXPIRED,
+            InteractionStatus.CANCELLED,
+        }:
+            raise ValueError("pending_status must be expired or cancelled")
+        active_values = tuple(status.value for status in _ACTIVE_SESSION_STATUSES)
+        placeholders = ", ".join("?" for _ in active_values)
+        timestamp = _serialize_datetime(updated_at)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                f"""
+                UPDATE codex_sessions
+                SET status = ?, summary = ?, updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (
+                    terminal_status.value,
+                    _safe_summary(summary),
+                    timestamp,
+                    session_id,
+                    *active_values,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            interaction_ids = [
+                row["id"]
+                for row in connection.execute(
+                    """
+                    SELECT id FROM codex_interactions
+                    WHERE session_id = ? AND status = ? ORDER BY id
+                    """,
+                    (session_id, InteractionStatus.PENDING.value),
+                ).fetchall()
+            ]
+            connection.execute(
+                """
+                UPDATE codex_interactions SET status = ?, resolved_at = ?
+                WHERE session_id = ? AND status = ?
+                """,
+                (
+                    pending_status.value,
+                    timestamp,
+                    session_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+        return interaction_ids
+
+    def expire_interaction(
+        self,
+        interaction_id: str,
+        *,
+        resolved_at: datetime | None = None,
+    ) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE codex_interactions
+                SET status = ?, resolved_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    InteractionStatus.EXPIRED.value,
+                    _serialize_datetime(resolved_at or datetime.now(timezone.utc)),
+                    interaction_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def cancel_pending_interactions(
+        self,
+        session_id: str,
+        *,
+        status: InteractionStatus,
+        resolved_at: datetime | None = None,
+    ) -> list[str]:
+        status = InteractionStatus(status)
+        if status not in {InteractionStatus.EXPIRED, InteractionStatus.CANCELLED}:
+            raise ValueError("status must be expired or cancelled")
+        timestamp = _serialize_datetime(resolved_at or datetime.now(timezone.utc))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            interaction_ids = [
+                row["id"]
+                for row in connection.execute(
+                    """
+                    SELECT id FROM codex_interactions
+                    WHERE session_id = ? AND status = ?
+                    ORDER BY id
+                    """,
+                    (session_id, InteractionStatus.PENDING.value),
+                ).fetchall()
+            ]
+            connection.execute(
+                """
+                UPDATE codex_interactions
+                SET status = ?, resolved_at = ?
+                WHERE session_id = ? AND status = ?
+                """,
+                (
+                    status.value,
+                    timestamp,
+                    session_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+        return interaction_ids
 
     def record_event_once(
         self,
@@ -486,12 +780,15 @@ class SQLiteCodexStore:
             if version == _SCHEMA_VERSION:
                 return
 
+            connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("BEGIN IMMEDIATE")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             for target_version in range(version + 1, _SCHEMA_VERSION + 1):
                 for statement in _MIGRATIONS[target_version]:
                     connection.execute(statement)
                 connection.execute(f"PRAGMA user_version = {target_version}")
+            connection.commit()
+            connection.execute("PRAGMA foreign_keys = ON")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -611,6 +908,38 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_codex_audit_session_created "
         "ON codex_audit(session_id, created_at, id)",
     ),
+    2: (
+        """
+        CREATE TABLE codex_interactions_v2 (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES codex_sessions(id),
+            request_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            lark_message_id TEXT,
+            payload_summary TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL,
+            resolved_at TEXT,
+            expires_at TEXT NOT NULL,
+            actor_id TEXT,
+            decision TEXT
+        )
+        """,
+        """
+        INSERT INTO codex_interactions_v2 (
+            id, session_id, request_id, kind, status, lark_message_id,
+            payload_summary, requested_at, resolved_at, expires_at, actor_id, decision
+        )
+        SELECT id, session_id, json_quote(request_id), kind, status, lark_message_id,
+               payload_summary, requested_at, resolved_at, expires_at, actor_id, decision
+        FROM codex_interactions
+        """,
+        "DROP TABLE codex_interactions",
+        "ALTER TABLE codex_interactions_v2 RENAME TO codex_interactions",
+        "CREATE INDEX idx_codex_interactions_status ON codex_interactions(status)",
+        "CREATE UNIQUE INDEX idx_codex_interactions_pending_request "
+        "ON codex_interactions(request_id) WHERE status = 'pending'",
+    ),
 }
 
 
@@ -696,6 +1025,23 @@ def _serialize_optional_datetime(value: datetime | None) -> str | None:
 
 def _safe_summary(value: str) -> str:
     return redact_text(value)[:_SUMMARY_LIMIT]
+
+
+def _interaction_values(interaction: PendingInteraction) -> tuple[object, ...]:
+    return (
+        interaction.id,
+        interaction.session_id,
+        interaction.request_id,
+        interaction.kind.value,
+        interaction.status.value,
+        interaction.lark_message_id,
+        _safe_summary(interaction.payload_summary),
+        _serialize_datetime(interaction.requested_at),
+        _serialize_optional_datetime(interaction.resolved_at),
+        _serialize_datetime(interaction.expires_at),
+        interaction.actor_id,
+        interaction.decision.value if interaction.decision is not None else None,
+    )
 
 
 def _normalize_decision(

@@ -99,6 +99,191 @@ def test_create_get_list_and_update_sessions_in_memory():
     assert store.get_session("missing") is None
 
 
+def test_update_session_if_status_is_compare_and_swap():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.RUNNING))
+    updated_at = NOW + timedelta(minutes=1)
+
+    assert store.update_session_if_status(
+        "session-1",
+        (SessionStatus.RUNNING,),
+        status=SessionStatus.WAITING_FOR_APPROVAL,
+        turn_id="turn-1",
+        updated_at=updated_at,
+    )
+    assert not store.update_session_if_status(
+        "session-1",
+        (SessionStatus.RUNNING,),
+        status=SessionStatus.FAILED,
+        updated_at=NOW + timedelta(minutes=2),
+    )
+
+    stored = store.get_session("session-1")
+    assert stored.status is SessionStatus.WAITING_FOR_APPROVAL
+    assert stored.turn_id == "turn-1"
+    assert stored.updated_at == updated_at
+
+
+def test_create_interaction_and_mark_waiting_is_atomic_and_pending_id_is_reusable():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.RUNNING))
+    first = make_interaction()
+
+    assert store.create_interaction_and_mark_waiting(
+        first,
+        SessionStatus.WAITING_FOR_APPROVAL,
+        NOW + timedelta(minutes=1),
+    )
+    duplicate = make_interaction("interaction-2").model_copy(
+        update={"request_id": first.request_id}
+    )
+    assert not store.create_interaction_and_mark_waiting(
+        duplicate,
+        SessionStatus.WAITING_FOR_APPROVAL,
+        NOW + timedelta(minutes=2),
+    )
+    assert store.get_interaction(duplicate.id) is None
+
+    assert store.resolve_interaction(
+        first.id, decision="approved", actor_id="user", resolved_at=NOW
+    )
+    store.update_session(
+        "session-1", status=SessionStatus.RUNNING, updated_at=NOW
+    )
+    assert store.create_interaction_and_mark_waiting(
+        duplicate,
+        SessionStatus.WAITING_FOR_APPROVAL,
+        NOW + timedelta(minutes=3),
+    )
+
+
+def test_create_interaction_and_mark_waiting_rejects_inactive_session_without_insert():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.SUCCEEDED))
+
+    assert not store.create_interaction_and_mark_waiting(
+        make_interaction(),
+        SessionStatus.WAITING_FOR_APPROVAL,
+        NOW,
+    )
+    assert store.get_interaction("interaction-1") is None
+
+
+def test_resolve_interaction_and_refresh_session_updates_both_or_neither():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.RUNNING))
+    interaction = make_interaction()
+    assert store.create_interaction_and_mark_waiting(
+        interaction, SessionStatus.WAITING_FOR_APPROVAL, NOW
+    )
+    resolved_at = NOW + timedelta(minutes=1)
+
+    assert store.resolve_interaction_and_refresh_session(
+        interaction.id,
+        decision="approved",
+        actor_id="user-1",
+        updated_at=resolved_at,
+    )
+    assert not store.resolve_interaction_and_refresh_session(
+        interaction.id,
+        decision="denied",
+        actor_id="user-2",
+        updated_at=NOW + timedelta(minutes=2),
+    )
+
+    stored = store.get_interaction(interaction.id)
+    assert stored.status is InteractionStatus.RESOLVED
+    assert stored.actor_id == "user-1"
+    assert store.get_session("session-1").status is SessionStatus.RUNNING
+    assert store.get_session("session-1").updated_at == resolved_at
+
+
+def test_resolve_interaction_refreshes_to_highest_priority_remaining_wait():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.RUNNING))
+    approval = make_interaction("approval")
+    user_input = make_interaction("input", kind=InteractionKind.USER_INPUT)
+    store.create_interaction(approval)
+    store.create_interaction(user_input)
+    store.update_session(
+        "session-1", status=SessionStatus.WAITING_FOR_INPUT, updated_at=NOW
+    )
+
+    assert store.resolve_interaction_and_refresh_session(
+        user_input.id,
+        decision="the answer",
+        actor_id="user-1",
+        updated_at=NOW + timedelta(minutes=1),
+    )
+
+    assert (
+        store.get_session("session-1").status
+        is SessionStatus.WAITING_FOR_APPROVAL
+    )
+
+
+def test_resolve_interaction_commits_claim_without_overwriting_terminal_session():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.CANCELLED))
+    interaction = make_interaction()
+    store.create_interaction(interaction)
+
+    assert store.resolve_interaction_and_refresh_session(
+        interaction.id,
+        decision="denied",
+        actor_id="user-1",
+        updated_at=NOW + timedelta(minutes=1),
+    )
+
+    assert store.get_interaction(interaction.id).status is InteractionStatus.RESOLVED
+    assert store.get_session("session-1").status is SessionStatus.CANCELLED
+
+
+def test_claim_session_terminal_is_atomic_and_returns_cancelled_pending_ids():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.WAITING_FOR_INPUT))
+    for interaction_id in ("interaction-b", "interaction-a"):
+        store.create_interaction(make_interaction(interaction_id))
+    completed_at = NOW + timedelta(minutes=1)
+
+    claimed = store.claim_session_terminal(
+        "session-1",
+        SessionStatus.CANCELLED,
+        "cancelled by user",
+        InteractionStatus.CANCELLED,
+        completed_at,
+    )
+
+    assert claimed == ["interaction-a", "interaction-b"]
+    assert store.get_session("session-1").status is SessionStatus.CANCELLED
+    assert all(
+        store.get_interaction(interaction_id).status is InteractionStatus.CANCELLED
+        for interaction_id in claimed
+    )
+    assert (
+        store.claim_session_terminal(
+            "session-1",
+            SessionStatus.FAILED,
+            "late failure",
+            InteractionStatus.EXPIRED,
+            NOW + timedelta(minutes=2),
+        )
+        is None
+    )
+
+
+def test_get_session_by_thread_returns_exact_match():
+    store = SQLiteCodexStore(":memory:")
+    first = make_session()
+    second = make_session("session-2")
+    store.create_session(first)
+    store.create_session(second)
+    store.update_session(first.id, thread_id="thread-1", updated_at=NOW)
+
+    assert store.get_session_by_thread("thread-1").id == first.id
+    assert store.get_session_by_thread("missing") is None
+
+
 def test_codex_store_creates_dedicated_schema_tables():
     store = SQLiteCodexStore(":memory:")
 
@@ -164,6 +349,40 @@ def test_first_pending_interaction_resolver_wins_without_overwrite():
     assert stored.actor_id == "user-1"
     assert stored.resolved_at == first_resolution
     assert store.get_pending_interaction(interaction.request_id) is None
+
+
+def test_expire_interaction_is_pending_only_and_first_transition_wins():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session())
+    store.create_interaction(make_interaction())
+    expired_at = NOW + timedelta(minutes=31)
+
+    assert store.expire_interaction("interaction-1", resolved_at=expired_at)
+    assert not store.expire_interaction("interaction-1", resolved_at=expired_at)
+    stored = store.get_interaction("interaction-1")
+    assert stored.status is InteractionStatus.EXPIRED
+    assert stored.resolved_at == expired_at
+
+
+@pytest.mark.parametrize("status", [InteractionStatus.EXPIRED, InteractionStatus.CANCELLED])
+def test_cancel_pending_interactions_updates_only_pending_in_id_order(status):
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session())
+    for interaction_id in ("interaction-b", "interaction-a", "interaction-c"):
+        store.create_interaction(make_interaction(interaction_id))
+    assert store.resolve_interaction(
+        "interaction-c", decision="approved", actor_id="user", resolved_at=NOW
+    )
+    resolved_at = NOW + timedelta(minutes=1)
+
+    changed = store.cancel_pending_interactions(
+        "session-1", status=status, resolved_at=resolved_at
+    )
+
+    assert changed == ["interaction-a", "interaction-b"]
+    assert store.get_interaction("interaction-a").status is status
+    assert store.get_interaction("interaction-b").resolved_at == resolved_at
+    assert store.get_interaction("interaction-c").status is InteractionStatus.RESOLVED
 
 
 def test_event_dedupe_insertion_succeeds_only_once():
@@ -545,10 +764,85 @@ def test_schema_version_and_required_indexes_are_installed():
             )
         }
 
-    assert version == 1
+    assert version == 2
     assert {
         "idx_codex_sessions_status",
         "idx_codex_interactions_status",
         "idx_notification_outbox_due",
         "idx_codex_audit_session_created",
+        "idx_codex_interactions_pending_request",
     } <= indexes
+
+
+def test_schema_v1_migration_canonicalizes_request_ids_and_preserves_reuse(
+    local_database,
+):
+    connection = sqlite3.connect(local_database)
+    connection.executescript(
+        """
+        PRAGMA user_version = 1;
+        CREATE TABLE codex_sessions (
+            id TEXT PRIMARY KEY, thread_id TEXT, turn_id TEXT, name TEXT NOT NULL,
+            cwd TEXT NOT NULL, model TEXT, sandbox TEXT NOT NULL, status TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE codex_interactions (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES codex_sessions(id),
+            request_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, status TEXT NOT NULL,
+            lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT NOT NULL,
+            actor_id TEXT, decision TEXT
+        );
+        CREATE TABLE notification_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT REFERENCES codex_sessions(id),
+            interaction_id TEXT REFERENCES codex_interactions(id),
+            notification_type TEXT NOT NULL, payload_summary TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+            sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL
+        );
+        """
+    )
+    session = make_session()
+    connection.execute(
+        """INSERT INTO codex_sessions
+        (id, name, cwd, model, sandbox, status, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session.id, session.name, session.cwd, session.model, session.sandbox,
+            session.status.value, session.summary, session.created_at.isoformat(),
+            session.updated_at.isoformat(),
+        ),
+    )
+    interaction = make_interaction()
+    connection.execute(
+        """INSERT INTO codex_interactions
+        (id, session_id, request_id, kind, status, payload_summary, requested_at,
+         expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            interaction.id, interaction.session_id, "legacy-id", interaction.kind.value,
+            InteractionStatus.RESOLVED.value, interaction.payload_summary,
+            interaction.requested_at.isoformat(), interaction.expires_at.isoformat(),
+        ),
+    )
+    connection.execute(
+        """INSERT INTO notification_outbox
+        (interaction_id, notification_type, payload_summary, next_attempt_at, created_at)
+        VALUES (?, 'approval', 'safe', ?, ?)""",
+        (interaction.id, NOW.isoformat(), NOW.isoformat()),
+    )
+    connection.commit()
+    connection.close()
+
+    store = SQLiteCodexStore(local_database)
+
+    assert store.get_interaction(interaction.id).request_id == '"legacy-id"'
+    with store._connection() as migrated:
+        assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 2
+    reused = make_interaction("interaction-2").model_copy(
+        update={"request_id": '"legacy-id"'}
+    )
+    store.create_interaction(reused)
