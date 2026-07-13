@@ -111,12 +111,14 @@ def test_bare_codex_without_arguments_launches_native_tui(monkeypatch):
 def test_codex_resume_is_forwarded_to_native_tui(monkeypatch):
     seen = []
     monkeypatch.setattr("lark_bot.cli._daemon_request", lambda method, path, **kwargs: {"session_id": "s1", "endpoint": "ws://127.0.0.1:1", "remote_auth_token": "t"} if method == "POST" else None)
-    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options.args) or 0)
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options) or 0)
 
     result = CliRunner().invoke(app, ["codex", "resume", "--last"])
 
     assert result.exit_code == 0
-    assert seen == [["resume", "--last"]]
+    assert seen[0].args == ["resume", "--last"]
+    assert seen[0].remote_endpoint == "ws://127.0.0.1:1"
+    assert seen[0].remote_auth_token == "t"
 
 
 def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
@@ -134,6 +136,7 @@ def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
 
     assert result.exit_code == 2
     assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
     assert "--no-lark" in result.output
     assert calls == []
 
@@ -160,7 +163,9 @@ def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, pic
     result = CliRunner().invoke(app, ["codex", *picker_args])
 
     assert result.exit_code == 2
-    assert "session picker" in result.output.lower()
+    assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
+    assert "--no-lark" in result.output
     assert calls == []
 
 
@@ -182,6 +187,7 @@ def test_codex_resume_explicit_session_is_forwarded_through_remote_daemon(monkey
     assert result.exit_code == 0
     assert seen[0].args == ["resume", "session-name"]
     assert seen[0].remote_endpoint == "ws://127.0.0.1:9000"
+    assert seen[0].remote_auth_token == "token"
     assert requests[0][0:2] == ("POST", "/interactive-sessions")
     assert requests[-1][0:2] == ("DELETE", "/interactive-sessions/s1")
 
