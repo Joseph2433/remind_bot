@@ -382,8 +382,18 @@ def test_local_probe_records_collaborators_closes_clients_and_reaps_process() ->
             version_reader=lambda executable: "codex-cli test",
         )
 
-        assert result.multi_client is True
-        assert result.codex_version == "codex-cli test"
+        assert result == ProbeResult(
+            multi_client=True,
+            both_initialized=True,
+            both_listed_threads=True,
+            resume_attempted=False,
+            resume_succeeded=False,
+            primary_survived=True,
+            error_type=None,
+            codex_version="codex-cli test",
+        )
+        primary.assert_finished()
+        secondary.assert_finished()
         assert process_calls == [
             (
                 (
