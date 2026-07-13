@@ -46,6 +46,9 @@ INTERCEPTED_SERVER_METHODS = frozenset(
 DEFAULT_MAX_MESSAGE_SIZE = 1024 * 1024
 DEFAULT_QUEUE_CAPACITY = 64
 DEFAULT_CLOSE_TIMEOUT = 2.0
+SESSION_PICKER_UNSUPPORTED_REASON = (
+    "session picker unsupported; use resume --last, an explicit session ID, or --no-lark"
+)
 
 
 class CodexGateway:
@@ -187,7 +190,7 @@ class CodexGateway:
 
     async def _handle_terminal(self, websocket: ServerConnection) -> None:
         if self._terminal is not None:
-            await websocket.close(1008, "only one terminal client is allowed")
+            await websocket.close(1008, SESSION_PICKER_UNSUPPORTED_REASON)
             return
         self._terminal = websocket
         sender = asyncio.create_task(

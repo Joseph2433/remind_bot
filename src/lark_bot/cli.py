@@ -65,6 +65,21 @@ app.add_typer(codex_app, name="codex")
 codex_app.add_typer(job_app, name="job")
 codex_app.add_typer(hooks_app, name="hooks")
 
+REMOTE_RESUME_PICKER_MESSAGE = (
+    "Use resume --last or an explicit session ID; the remote session picker "
+    "is unsupported; use --no-lark."
+)
+
+
+def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
+    """Return whether resume would require the unsupported remote picker."""
+
+    if not args or args[0] != "resume":
+        return False
+    if "--last" in args[1:]:
+        return False
+    return len(args) == 1 or args[1].startswith("-")
+
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(level=level.upper(), format="%(levelname)s %(name)s: %(message)s")
@@ -230,6 +245,9 @@ def _emit_result(value: object, json_output: bool) -> None:
 
 
 def _run_codex_tui(args: Sequence[str], *, no_lark: bool = False) -> None:
+    if not no_lark and _uses_remote_resume_picker(args):
+        raise typer.BadParameter(REMOTE_RESUME_PICKER_MESSAGE)
+
     settings = get_settings()
     descriptor: dict[str, object] | None = None
     try:
