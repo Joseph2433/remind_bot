@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
@@ -64,6 +64,7 @@ class OrchestratorEvent:
 class _LiveInteraction:
     request: ServerRequest
     interaction: PendingInteraction
+    responder: Callable[..., Awaitable[object]]
 
 
 class CodexOrchestrator:
@@ -202,24 +203,84 @@ class CodexOrchestrator:
                 await self._emit(OrchestratorEventType.SESSION_COMPLETED, session_id, status=SessionStatus.FAILED, summary=summary)
             raise
 
+    async def create_interactive_session(
+        self,
+        name: str,
+        cwd: str,
+        model: str | None = None,
+        sandbox: str = "workspace-write",
+    ) -> CodexSession:
+        timestamp = self._utc_now()
+        session = CodexSession(
+            id=str(self._id_factory()),
+            name=name,
+            cwd=cwd,
+            model=model,
+            sandbox=sandbox,
+            status=SessionStatus.STARTING,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        self._store.create_session(session)
+        return session
+
+    def bind_interactive_thread(
+        self,
+        session_id: str,
+        thread_id: str,
+        turn_id: str | None = None,
+    ) -> bool:
+        if not isinstance(thread_id, str) or not thread_id:
+            raise ValueError("thread_id must be a non-empty string")
+        if turn_id is not None and (not isinstance(turn_id, str) or not turn_id):
+            raise ValueError("turn_id must be a non-empty string")
+        return self._store.update_session_if_status(
+            session_id,
+            (SessionStatus.STARTING,),
+            thread_id=thread_id,
+            turn_id=turn_id,
+            status=SessionStatus.RUNNING,
+            updated_at=self._utc_now(),
+        )
+
     async def process_server_request(
-        self, request: ServerRequest
+        self,
+        request: ServerRequest,
+        *,
+        session_id: str | None = None,
+        responder: Callable[..., Awaitable[object]] | None = None,
     ) -> PendingInteraction | None:
         kind = _REQUEST_KINDS.get(request.method)
         if kind is None:
-            await self._app_server.respond_error(
-                request.request_id, -32601, "method not found"
+            await self._respond_request_error(
+                request.request_id,
+                responder,
+                -32601,
+                "method not found",
             )
             return None
         thread_id = request.params.get("threadId")
-        session = (
-            self._store.get_session_by_thread(thread_id)
-            if isinstance(thread_id, str) and thread_id
-            else None
-        )
+        if session_id is not None:
+            session = self._store.get_session(session_id)
+            if (
+                session is not None
+                and isinstance(thread_id, str)
+                and thread_id
+                and session.thread_id != thread_id
+            ):
+                session = None
+        else:
+            session = (
+                self._store.get_session_by_thread(thread_id)
+                if isinstance(thread_id, str) and thread_id
+                else None
+            )
         if session is None or session.status not in _ACTIVE_STATUSES:
-            await self._app_server.respond_error(
-                request.request_id, -32602, "invalid or inactive threadId"
+            await self._respond_request_error(
+                request.request_id,
+                responder,
+                -32602,
+                "invalid or inactive threadId",
             )
             return None
 
@@ -239,9 +300,18 @@ class CodexOrchestrator:
             else SessionStatus.WAITING_FOR_APPROVAL
         )
         if not self._store.create_interaction_and_mark_waiting(interaction, waiting_status, self._utc_now()):
-            await self._app_server.respond_error(request.request_id, -32600, "duplicate or inactive request")
+            await self._respond_request_error(
+                request.request_id,
+                responder,
+                -32600,
+                "duplicate or inactive request",
+            )
             return None
-        self._live[interaction.id] = _LiveInteraction(request, interaction)
+        self._live[interaction.id] = _LiveInteraction(
+            request,
+            interaction,
+            responder or self._app_server.respond,
+        )
         await self._emit(
             OrchestratorEventType.INTERACTION_REQUESTED,
             session.id,
@@ -273,7 +343,7 @@ class CodexOrchestrator:
             return False
         self._live.pop(interaction_id, None)
         try:
-            await self._app_server.respond(live.request.request_id, response)
+            await live.responder(live.request.request_id, response)
         except BaseException as error:
             await self._interrupt_session(
                 interaction.session_id, _safe_summary(str(error))
@@ -285,6 +355,42 @@ class CodexOrchestrator:
                 OrchestratorEventType.INTERACTION_RESOLVED,
                 interaction.session_id,
                 interaction_id=interaction_id,
+                status=SessionStatus.RUNNING,
+                summary=decision,
+            )
+        return True
+
+    async def resolve_terminal_request(
+        self,
+        request_id: int | str,
+        result: object,
+    ) -> bool:
+        live = self._find_live_by_request_id(request_id)
+        if live is None:
+            return False
+        decision = self._terminal_decision(live, result)
+        interaction = live.interaction
+        if not self._store.resolve_interaction_and_refresh_session(
+            interaction.id,
+            decision=decision,
+            actor_id="terminal",
+            updated_at=self._utc_now(),
+        ):
+            return False
+        self._live.pop(interaction.id, None)
+        try:
+            await live.responder(live.request.request_id, result)
+        except BaseException as error:
+            await self._interrupt_session(
+                interaction.session_id, _safe_summary(str(error))
+            )
+            raise
+        current = self._store.get_session(interaction.session_id)
+        if current is not None and current.status in _ACTIVE_STATUSES:
+            await self._emit(
+                OrchestratorEventType.INTERACTION_RESOLVED,
+                interaction.session_id,
+                interaction_id=interaction.id,
                 status=SessionStatus.RUNNING,
                 summary=decision,
             )
@@ -308,6 +414,19 @@ class CodexOrchestrator:
         return tuple(question_ids)
 
     async def process_notification(self, notification: ServerNotification) -> None:
+        if notification.method == "serverRequest/resolved":
+            request_id = notification.params.get("requestId")
+            if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
+                return
+            live = self._find_live_by_request_id(request_id)
+            if live is None:
+                return
+            self._store.cancel_interaction_and_refresh_session(
+                live.interaction.id,
+                updated_at=self._utc_now(),
+            )
+            self._live.pop(live.interaction.id, None)
+            return
         if notification.method == "item/completed":
             self._remember_final_text(notification.params)
             return
@@ -392,7 +511,7 @@ class CodexOrchestrator:
                 continue
             response = self._denial_response(interaction.kind, live.request.params)
             try:
-                await self._app_server.respond(live.request.request_id, response)
+                await live.responder(live.request.request_id, response)
             except BaseException as error:
                 await self._interrupt_session(
                     interaction.session_id, _safe_summary(str(error))
@@ -560,6 +679,75 @@ class CodexOrchestrator:
             return permission_response(request.params, allow), "granted" if allow else "denied"
         raise ValueError(f"unsupported interaction kind: {kind}")
 
+    def _terminal_decision(
+        self,
+        live: _LiveInteraction,
+        result: object,
+    ) -> str:
+        if not isinstance(result, Mapping):
+            raise ValueError("terminal response result must be an object")
+        kind = live.interaction.kind
+        if kind is InteractionKind.USER_INPUT:
+            self._validate_terminal_answers(live.request, result)
+            return "submitted"
+        if kind is InteractionKind.PERMISSION_REQUEST:
+            permissions = result.get("permissions")
+            if not isinstance(permissions, Mapping):
+                raise ValueError("terminal permission response permissions must be an object")
+            scope = result.get("scope")
+            if scope is not None and not isinstance(scope, str):
+                raise ValueError("terminal permission response scope must be a string")
+            strict = result.get("strictAutoReview")
+            if strict is not None and not isinstance(strict, bool):
+                raise ValueError(
+                    "terminal permission response strictAutoReview must be a boolean"
+                )
+            return "granted" if permissions else "denied"
+        decision = result.get("decision")
+        if not isinstance(decision, str):
+            raise ValueError("terminal approval response decision must be a string")
+        if decision in {"accept", "acceptForSession"}:
+            return (
+                "approved"
+                if kind is InteractionKind.EXEC_APPROVAL
+                else "accept"
+            )
+        if decision in {"decline", "cancel"}:
+            return "denied" if kind is InteractionKind.EXEC_APPROVAL else "decline"
+        raise ValueError("unsupported terminal approval decision")
+
+    @staticmethod
+    def _validate_terminal_answers(
+        request: ServerRequest,
+        result: Mapping[str, Any],
+    ) -> None:
+        questions = request.params.get("questions")
+        if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
+            raise ValueError("questions must be an array")
+        expected: set[str] = set()
+        for question in questions:
+            if not isinstance(question, Mapping):
+                raise ValueError("each question must be an object")
+            question_id = question.get("id")
+            if not isinstance(question_id, str) or not question_id:
+                raise ValueError("each question must have a non-empty string id")
+            if question_id in expected:
+                raise ValueError(f"duplicate question id: {question_id}")
+            expected.add(question_id)
+        answers = result.get("answers")
+        if not isinstance(answers, Mapping):
+            raise ValueError("terminal user input answers must be an object")
+        if set(answers) != expected:
+            raise ValueError("terminal user input answers do not match questions")
+        for answer in answers.values():
+            if not isinstance(answer, Mapping):
+                raise ValueError("each terminal answers entry must be an object")
+            values = answer.get("answers")
+            if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+                raise ValueError("each terminal answer answers must be an array")
+            if any(not isinstance(value, str) for value in values):
+                raise ValueError("terminal answer values must be strings")
+
     @staticmethod
     def _denial_response(
         kind: InteractionKind, params: Mapping[str, Any]
@@ -579,6 +767,36 @@ class CodexOrchestrator:
             if live.interaction.session_id == session_id
         ]:
             self._live.pop(interaction_id, None)
+
+    async def _respond_request_error(
+        self,
+        request_id: int | str,
+        responder: Callable[..., Awaitable[object]] | None,
+        code: int,
+        message: str,
+        data: object | None = None,
+    ) -> None:
+        if responder is None:
+            await self._app_server.respond_error(request_id, code, message, data)
+            return
+        error = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        await responder(request_id, error=error)
+
+    def _find_live_by_request_id(
+        self,
+        request_id: int | str,
+    ) -> _LiveInteraction | None:
+        canonical_id = _canonical_request_id(request_id)
+        return next(
+            (
+                live
+                for live in self._live.values()
+                if live.interaction.request_id == canonical_id
+            ),
+            None,
+        )
 
     async def _emit(
         self,

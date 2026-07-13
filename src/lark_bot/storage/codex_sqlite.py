@@ -428,6 +428,63 @@ class SQLiteCodexStore:
             )
         return True
 
+    def cancel_interaction_and_refresh_session(
+        self,
+        interaction_id: str,
+        *,
+        updated_at: datetime,
+    ) -> bool:
+        timestamp = _serialize_datetime(updated_at)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT session_id FROM codex_interactions WHERE id = ?",
+                (interaction_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            cursor = connection.execute(
+                """
+                UPDATE codex_interactions
+                SET status = ?, resolved_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    InteractionStatus.CANCELLED.value,
+                    timestamp,
+                    interaction_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            pending_kinds = {
+                InteractionKind(pending["kind"])
+                for pending in connection.execute(
+                    """
+                    SELECT kind FROM codex_interactions
+                    WHERE session_id = ? AND status = ?
+                    """,
+                    (row["session_id"], InteractionStatus.PENDING.value),
+                ).fetchall()
+            }
+            if InteractionKind.USER_INPUT in pending_kinds:
+                next_status = SessionStatus.WAITING_FOR_INPUT
+            elif pending_kinds:
+                next_status = SessionStatus.WAITING_FOR_APPROVAL
+            else:
+                next_status = SessionStatus.RUNNING
+            active_values = tuple(value.value for value in _ACTIVE_SESSION_STATUSES)
+            placeholders = ", ".join("?" for _ in active_values)
+            connection.execute(
+                f"""
+                UPDATE codex_sessions SET status = ?, updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (next_status.value, timestamp, row["session_id"], *active_values),
+            )
+        return True
+
     def claim_session_terminal(
         self,
         session_id: str,

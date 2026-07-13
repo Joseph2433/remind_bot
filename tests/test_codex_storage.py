@@ -198,6 +198,30 @@ def test_resolve_interaction_and_refresh_session_updates_both_or_neither():
     assert store.get_session("session-1").updated_at == resolved_at
 
 
+def test_cancel_interaction_and_refresh_session_is_pending_only():
+    store = SQLiteCodexStore(":memory:")
+    store.create_session(make_session(status=SessionStatus.RUNNING))
+    interaction = make_interaction()
+    assert store.create_interaction_and_mark_waiting(
+        interaction, SessionStatus.WAITING_FOR_APPROVAL, NOW
+    )
+    cancelled_at = NOW + timedelta(minutes=1)
+
+    assert store.cancel_interaction_and_refresh_session(
+        interaction.id, updated_at=cancelled_at
+    )
+    assert not store.cancel_interaction_and_refresh_session(
+        interaction.id, updated_at=NOW + timedelta(minutes=2)
+    )
+
+    stored = store.get_interaction(interaction.id)
+    assert stored.status is InteractionStatus.CANCELLED
+    assert stored.actor_id is None
+    assert stored.decision is None
+    assert stored.resolved_at == cancelled_at
+    assert store.get_session("session-1").status is SessionStatus.RUNNING
+
+
 def test_resolve_interaction_refreshes_to_highest_priority_remaining_wait():
     store = SQLiteCodexStore(":memory:")
     store.create_session(make_session(status=SessionStatus.RUNNING))

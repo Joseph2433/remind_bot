@@ -172,6 +172,32 @@ def test_create_session_persists_state_without_prompt_and_emits_started():
     run(scenario())
 
 
+def test_interactive_session_is_created_without_prompt_and_bound_to_external_thread():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator("session-1")
+
+        session = await orchestrator.create_interactive_session(
+            "interactive", "C:/workspace", "gpt", "workspace-write"
+        )
+
+        assert session.status is SessionStatus.STARTING
+        assert session.thread_id is None
+        assert app.thread_calls == []
+        assert app.turn_calls == []
+        assert orchestrator.bind_interactive_thread(
+            session.id, "external-thread", "external-turn"
+        )
+        bound = store.get_session(session.id)
+        assert bound.status is SessionStatus.RUNNING
+        assert bound.thread_id == "external-thread"
+        assert bound.turn_id == "external-turn"
+        assert not orchestrator.bind_interactive_thread(
+            session.id, "different-thread"
+        )
+
+    run(scenario())
+
+
 def test_create_session_failure_marks_failed_with_redacted_summary_and_reraises():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator("session-1")
@@ -377,6 +403,194 @@ def test_user_input_question_ids_are_available_only_while_live():
     run(scenario())
 
 
+def test_external_lark_resolution_uses_injected_responder_not_managed_app_server():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1"
+        )
+        session = await orchestrator.create_interactive_session(
+            "interactive", "C:/workspace", None, "workspace-write"
+        )
+        assert orchestrator.bind_interactive_thread(session.id, "external-thread")
+        responses = []
+
+        async def respond(request_id, result):
+            responses.append((request_id, result))
+
+        await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"command": "echo ok"},
+            ),
+            session_id=session.id,
+            responder=respond,
+        )
+
+        assert await orchestrator.resolve_interaction(
+            "interaction-1", "ou_lark_actor", allow=True
+        )
+        assert responses == [("rpc-1", {"decision": "accept"})]
+        assert app.responses == []
+        assert store.get_interaction("interaction-1").actor_id == "ou_lark_actor"
+
+    run(scenario())
+
+
+def test_external_request_errors_use_injected_responder_not_managed_app_server():
+    async def scenario():
+        orchestrator, _, app, _ = make_orchestrator(
+            "session-1", "interaction-1", "duplicate"
+        )
+        session = await orchestrator.create_interactive_session(
+            "interactive", "C:/workspace", None, "workspace-write"
+        )
+        assert orchestrator.bind_interactive_thread(session.id, "external-thread")
+        errors = []
+
+        async def respond(request_id, result=None, *, error=None):
+            errors.append((request_id, result, error))
+
+        assert await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"command": "echo ok"},
+            ),
+            session_id=session.id,
+            responder=respond,
+        )
+        assert await orchestrator.process_server_request(
+            ServerRequest("unknown", "unknown/method", {}),
+            session_id=session.id,
+            responder=respond,
+        ) is None
+        assert await orchestrator.process_server_request(
+            ServerRequest(
+                "inactive",
+                "item/commandExecution/requestApproval",
+                {"command": "echo no"},
+            ),
+            session_id="missing",
+            responder=respond,
+        ) is None
+        assert await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"command": "echo duplicate"},
+            ),
+            session_id=session.id,
+            responder=respond,
+        ) is None
+
+        assert [item[2]["code"] for item in errors] == [-32601, -32602, -32600]
+        assert app.errors == []
+
+    run(scenario())
+
+
+def test_terminal_first_claims_by_rpc_id_and_forwards_raw_result_exactly_once():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1"
+        )
+        await create_running_session(orchestrator)
+        await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"threadId": "thread-1"},
+            )
+        )
+        raw = {"decision": "acceptForSession"}
+
+        assert await orchestrator.resolve_terminal_request("rpc-1", raw)
+        assert not await orchestrator.resolve_terminal_request("rpc-1", raw)
+        assert not await orchestrator.resolve_interaction(
+            "interaction-1", "late-lark", allow=False
+        )
+
+        stored = store.get_interaction("interaction-1")
+        assert stored.actor_id == "terminal"
+        assert stored.decision == "approved"
+        assert app.responses == [("rpc-1", raw)]
+
+    run(scenario())
+
+
+def test_lark_first_suppresses_late_terminal_response():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1"
+        )
+        await create_running_session(orchestrator)
+        await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/fileChange/requestApproval",
+                {"threadId": "thread-1"},
+            )
+        )
+
+        assert await orchestrator.resolve_interaction(
+            "interaction-1", "ou_lark_actor", allow=False
+        )
+        assert not await orchestrator.resolve_terminal_request(
+            "rpc-1", {"decision": "accept"}
+        )
+        assert store.get_interaction("interaction-1").actor_id == "ou_lark_actor"
+        assert app.responses == [("rpc-1", {"decision": "decline"})]
+
+    run(scenario())
+
+
+def test_terminal_user_input_validates_shape_before_claim_and_forwards_raw_result():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1"
+        )
+        await create_running_session(orchestrator)
+        await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-input",
+                "item/tool/requestUserInput",
+                {
+                    "threadId": "thread-1",
+                    "questions": [{"id": "q1", "question": "Value?"}],
+                },
+            )
+        )
+
+        with pytest.raises(ValueError, match="answers"):
+            await orchestrator.resolve_terminal_request(
+                "rpc-input", {"answers": {"q1": "not-an-answer-object"}}
+            )
+        assert store.get_interaction("interaction-1").status is InteractionStatus.PENDING
+
+        raw = {"answers": {"q1": {"answers": ["secret reply"]}}}
+        assert await orchestrator.resolve_terminal_request("rpc-input", raw)
+        stored = store.get_interaction("interaction-1")
+        assert stored.actor_id == "terminal"
+        assert stored.decision == "submitted"
+        assert "secret reply" not in stored.model_dump_json()
+        assert app.responses == [("rpc-input", raw)]
+
+    run(scenario())
+
+
+def test_terminal_unknown_request_is_not_forwarded():
+    async def scenario():
+        orchestrator, _, app, _ = make_orchestrator()
+
+        assert not await orchestrator.resolve_terminal_request(
+            "missing", {"decision": "accept"}
+        )
+        assert app.responses == []
+
+    run(scenario())
+
+
 def test_response_failure_after_claim_interrupts_session_once():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator("session-1", "interaction-1")
@@ -462,6 +676,39 @@ def test_turn_notifications_bind_turn_and_complete_session(turn_status, session_
                 terminal_events.append(event)
         assert len(terminal_events) == 1
         assert terminal_events[0].event_type is event_type
+
+    run(scenario())
+
+
+def test_server_request_resolved_notification_cancels_pending_live_interaction():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1"
+        )
+        await create_running_session(orchestrator)
+        await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"threadId": "thread-1"},
+            )
+        )
+
+        await orchestrator.process_notification(
+            ServerNotification(
+                "serverRequest/resolved", {"requestId": "rpc-1"}
+            )
+        )
+
+        assert store.get_interaction("interaction-1").status is InteractionStatus.CANCELLED
+        assert store.get_session("session-1").status is SessionStatus.RUNNING
+        assert not await orchestrator.resolve_interaction(
+            "interaction-1", "late-lark", allow=True
+        )
+        assert not await orchestrator.resolve_terminal_request(
+            "rpc-1", {"decision": "accept"}
+        )
+        assert app.responses == []
 
     run(scenario())
 
