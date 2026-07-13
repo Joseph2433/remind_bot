@@ -209,6 +209,8 @@ def _default_version_reader(executable: str) -> str:
         [executable, "--version"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=5,
         check=False,
     )

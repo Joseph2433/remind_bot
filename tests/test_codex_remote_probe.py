@@ -10,6 +10,7 @@ import pytest
 
 from lark_bot.codex_remote_probe import (
     ProbeResult,
+    _default_version_reader,
     _rpc,
     probe_remote_clients,
     run_local_probe,
@@ -611,6 +612,36 @@ def test_local_probe_version_reader_failure_keeps_probe_result_and_reaps() -> No
         assert process.terminated and process.wait_calls == 1
 
     asyncio.run(scenario())
+
+
+def test_default_version_reader_forces_utf8_decoding(monkeypatch: Any) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class Completed:
+        stdout = "codex-cli test\nsecond line"
+
+    def fake_run(args: list[str], **kwargs: object) -> Completed:
+        calls.append((args, kwargs))
+        return Completed()
+
+    monkeypatch.setattr("lark_bot.codex_remote_probe.subprocess.run", fake_run)
+
+    result = _default_version_reader("C:/tools/codex.exe")
+
+    assert result == "codex-cli test"
+    assert calls == [
+        (
+            ["C:/tools/codex.exe", "--version"],
+            {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": 5,
+                "check": False,
+            },
+        )
+    ]
 
 
 def test_rpc_ignores_nonresponses_and_rejects_same_id_server_request() -> None:
