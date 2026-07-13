@@ -206,14 +206,20 @@ class DaemonRuntime:
     def _render(self, item: Any) -> str:
         summary = redact_text(str(item.payload_summary))[:500]
         heading = str(item.notification_type).replace("orchestrator:", "Codex ").replace("_", " ")
-        text = f"{heading}\n{summary}"
         if item.notification_type.endswith("interaction_requested"):
             getter = getattr(self.store, "get_interaction", None)
             interaction = getter(item.interaction_id) if getter is not None and item.interaction_id else None
             if interaction is not None and interaction.kind is InteractionKind.USER_INPUT:
-                text += "\nReply to this message and @Bot. For multiple questions, use `1: answer` on separate lines."
+                heading = "Codex 请求输入"
+                instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
             else:
-                text += "\nReact 👍 to approve or 👎 to deny."
+                heading = "Codex 请求审批"
+                instruction = (
+                    "请长按本消息并选择“回复”：输入 yes 或 y 表示允许，"
+                    "输入 no 或 n 表示拒绝。"
+                )
+            return f"{heading}\n{summary}\n{instruction}"
+        text = f"{heading}\n{summary}"
         return text
 
     async def close(self) -> None:

@@ -181,7 +181,13 @@ def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
         await runtime.start(); await asyncio.sleep(0.05); await runtime.close()
         assert orchestrator.started and orchestrator.closed and connection.started and connection.closed
         assert store.attached == [("i1", "m1")] and store.sent == [1]
-        assert any("👍" in text and "👎" in text for text in lark.messages)
+        assert any(
+            "Codex 请求审批" in text
+            and "请长按本消息并选择“回复”" in text
+            and "yes 或 y 表示允许" in text
+            and "no 或 n 表示拒绝" in text
+            for text in lark.messages
+        )
         assert store.closed and lark.closed
     asyncio.run(scenario())
 
