@@ -69,7 +69,7 @@ class FakeLark:
     def close(self): self.closed = True
 
 
-def _runtime(tmp_path: Path):
+def _runtime(tmp_path: Path, interactive_manager=None):
     store = FakeStore(); orchestrator = FakeOrchestrator(store); connection = FakeLongConnection(); lark = FakeLark()
     settings = SimpleNamespace(
         outbox_poll_seconds=0.01,
@@ -77,8 +77,23 @@ def _runtime(tmp_path: Path):
         notification_delay_seconds=5.0,
         daemon_token_path=tmp_path / "token",
     )
-    runtime = DaemonRuntime(settings, store, orchestrator, lark, connection, SimpleNamespace(route=lambda event: None), now=lambda: NOW)
+    runtime = DaemonRuntime(settings, store, orchestrator, lark, connection, SimpleNamespace(route=lambda event: None), interactive_manager=interactive_manager, now=lambda: NOW)
     return runtime, store, orchestrator, connection, lark
+
+
+class FakeInteractiveManager:
+    def __init__(self):
+        self.started = False
+        self.closed = False
+        self.created = []
+        self.deleted = []
+
+    async def start(self): self.started = True
+    async def create_session(self, **kwargs):
+        self.created.append(kwargs)
+        return SimpleNamespace(session_id="interactive-1", endpoint="ws://127.0.0.1:4567", remote_auth_token="remote-secret")
+    async def close_session(self, session_id): self.deleted.append(session_id); return True
+    async def close(self): self.closed = True
 
 
 def test_token_is_created_once(workspace_tmp_path):
@@ -94,6 +109,41 @@ def test_api_requires_bearer_and_excludes_prompt(workspace_tmp_path):
         assert client.get("/api/v1/codex/sessions").status_code == 401
         response = client.post("/api/v1/codex/sessions", headers={"Authorization": "Bearer secret"}, json={"name": "n", "cwd": ".", "prompt": "TOP SECRET"})
         assert response.status_code == 201 and "TOP SECRET" not in response.text
+
+
+def test_interactive_api_is_authenticated_and_returns_remote_secret_only_to_caller(workspace_tmp_path):
+    manager = FakeInteractiveManager()
+    runtime, *_ = _runtime(workspace_tmp_path, manager)
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(create_daemon_app(runtime, token="secret")) as client:
+        assert client.post("/api/v1/codex/interactive-sessions", json={"cwd": "."}).status_code == 401
+        response = client.post(
+            "/api/v1/codex/interactive-sessions",
+            headers=headers,
+            json={"name": "interactive", "cwd": "C:/work", "model": "gpt", "sandbox": "workspace-write"},
+        )
+        assert response.status_code == 201
+        assert response.json() == {
+            "session_id": "interactive-1",
+            "endpoint": "ws://127.0.0.1:4567",
+            "remote_auth_token": "remote-secret",
+        }
+        assert manager.created == [{"name": "interactive", "cwd": "C:/work", "model": "gpt", "sandbox": "workspace-write"}]
+        assert client.delete("/api/v1/codex/interactive-sessions/interactive-1", headers=headers).status_code == 204
+        assert manager.deleted == ["interactive-1"]
+    assert manager.started and manager.closed
+
+
+def test_interactive_api_reports_unconfigured_manager(workspace_tmp_path):
+    runtime, *_ = _runtime(workspace_tmp_path)
+    with TestClient(create_daemon_app(runtime, token="secret")) as client:
+        response = client.post(
+            "/api/v1/codex/interactive-sessions",
+            headers={"Authorization": "Bearer secret"},
+            json={"cwd": "."},
+        )
+        assert response.status_code == 503
+        assert "interactive" in response.json()["detail"].lower()
 
 
 def test_hook_endpoint_bounds_and_deduplicates(workspace_tmp_path):

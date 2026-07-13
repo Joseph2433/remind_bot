@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from collections.abc import Sequence
@@ -38,7 +39,9 @@ class _CodexFallbackGroup(TyperGroup):
 
         @click.pass_context
         def forward(sub_ctx: click.Context) -> None:
-            _run_codex_tui([cmd_name, *sub_ctx.args])
+            parent = sub_ctx.parent
+            no_lark = bool(parent and parent.params.get("no_lark"))
+            _run_codex_tui([cmd_name, *sub_ctx.args], no_lark=no_lark)
 
         return click.Command(
             name=cmd_name,
@@ -226,23 +229,69 @@ def _emit_result(value: object, json_output: bool) -> None:
         typer.echo(f"{value.get('id', 'ok')}  {value.get('status', 'ok')}  {value.get('name', '')}".rstrip())
 
 
-def _run_codex_tui(args: Sequence[str]) -> None:
+def _run_codex_tui(args: Sequence[str], *, no_lark: bool = False) -> None:
     settings = get_settings()
+    descriptor: dict[str, object] | None = None
     try:
+        if not no_lark:
+            try:
+                value = _daemon_request(
+                    "POST",
+                    "/interactive-sessions",
+                    json_body={
+                        "name": "interactive",
+                        "cwd": os.getcwd(),
+                        "sandbox": "workspace-write",
+                    },
+                )
+            except typer.BadParameter:
+                raise typer.BadParameter(
+                    "Local Codex daemon is unavailable. Start it with `lark-bot daemon`, "
+                    "or use `lark-bot codex --no-lark`."
+                ) from None
+            if not isinstance(value, dict):
+                raise typer.BadParameter("Local Codex daemon returned an invalid interactive session.")
+            descriptor = value
         exit_code = CodexTuiLauncher().run(
-            CodexTuiOptions(args=list(args), codex_path=settings.codex_path)
+            CodexTuiOptions(
+                args=list(args),
+                codex_path=settings.codex_path,
+                callback_command=[] if no_lark else [sys.executable, "-m", "lark_bot", "codex-hook"],
+                remote_endpoint=(
+                    str(descriptor["endpoint"]) if descriptor is not None else None
+                ),
+                remote_auth_token=(
+                    str(descriptor["remote_auth_token"])
+                    if descriptor is not None
+                    else None
+                ),
+            )
         )
     except FileNotFoundError as error:
         raise typer.BadParameter(str(error)) from None
+    finally:
+        if descriptor is not None and "session_id" in descriptor:
+            try:
+                _daemon_request(
+                    "DELETE",
+                    f"/interactive-sessions/{descriptor['session_id']}",
+                )
+            except Exception:
+                # The daemon also reaps sessions during shutdown; cleanup must
+                # not replace the native TUI's exit status or original error.
+                pass
     raise typer.Exit(exit_code)
 
 
 @codex_app.callback()
-def codex_command(ctx: typer.Context) -> None:
+def codex_command(
+    ctx: typer.Context,
+    no_lark: bool = typer.Option(False, "--no-lark", help="Launch Codex directly without the Lark gateway."),
+) -> None:
     """Launch the native Codex TUI when no Lark Bot subcommand is selected."""
 
     if ctx.invoked_subcommand is None:
-        _run_codex_tui(ctx.args)
+        _run_codex_tui(ctx.args, no_lark=no_lark)
 
 
 @job_app.command("start")

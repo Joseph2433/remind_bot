@@ -550,6 +550,29 @@ class CodexOrchestrator:
                 self._terminal_error = error
         return True
 
+    async def close_interactive_session(self, session_id: str) -> bool:
+        """Finish an externally hosted TUI session without touching managed Codex."""
+        session = self._store.get_session(session_id)
+        if session is None or session.status not in _ACTIVE_STATUSES:
+            return False
+        affected = self._store.claim_session_terminal(
+            session_id,
+            SessionStatus.CANCELLED,
+            summary="interactive session closed",
+            pending_status=InteractionStatus.CANCELLED,
+            updated_at=self._utc_now(),
+        )
+        if affected is None:
+            return False
+        self._drop_live_for_session(session_id)
+        await self._emit(
+            OrchestratorEventType.SESSION_COMPLETED,
+            session_id,
+            status=SessionStatus.CANCELLED,
+            summary="interactive session closed",
+        )
+        return True
+
     async def close(self) -> None:
         async with self._close_lock:
             if self._closed:

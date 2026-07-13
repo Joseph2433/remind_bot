@@ -12,7 +12,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-from lark_bot.codex_app_server import ServerRequest
+from lark_bot.codex_app_server import ServerNotification, ServerRequest
 
 
 JsonObject: TypeAlias = dict[str, Any]
@@ -22,6 +22,15 @@ ServerRequestHandler: TypeAlias = Callable[
 ]
 TerminalResponseHandler: TypeAlias = Callable[
     [int | str, JsonObject, RespondUpstream], Awaitable[bool]
+]
+TerminalRequestObserver: TypeAlias = Callable[
+    [int | str, str, JsonObject], Awaitable[None]
+]
+UpstreamResponseObserver: TypeAlias = Callable[
+    [int | str, str, JsonObject, JsonObject], Awaitable[None]
+]
+UpstreamNotificationObserver: TypeAlias = Callable[
+    [ServerNotification], Awaitable[None]
 ]
 
 
@@ -48,6 +57,9 @@ class CodexGateway:
         *,
         on_server_request: ServerRequestHandler,
         on_terminal_response: TerminalResponseHandler,
+        on_terminal_request: TerminalRequestObserver | None = None,
+        on_upstream_response: UpstreamResponseObserver | None = None,
+        on_upstream_notification: UpstreamNotificationObserver | None = None,
         token: str | None = None,
         upstream_headers: Mapping[str, str] | None = None,
         max_message_size: int = DEFAULT_MAX_MESSAGE_SIZE,
@@ -64,6 +76,9 @@ class CodexGateway:
         self._upstream_endpoint = upstream_endpoint
         self._on_server_request = on_server_request
         self._on_terminal_response = on_terminal_response
+        self._on_terminal_request = on_terminal_request
+        self._on_upstream_response = on_upstream_response
+        self._on_upstream_notification = on_upstream_notification
         self._token = token or secrets.token_urlsafe(32)
         self._upstream_headers = dict(upstream_headers or {})
         self._max_message_size = max_message_size
@@ -80,6 +95,7 @@ class CodexGateway:
         self._response_lock = asyncio.Lock()
         self._intercepted_ids: set[int | str] = set()
         self._responded_ids: set[int | str] = set()
+        self._terminal_requests: dict[int | str, tuple[str, JsonObject]] = {}
         self._started = False
         self._closing = False
 
@@ -153,6 +169,7 @@ class CodexGateway:
         self._terminal = None
         self._intercepted_ids.clear()
         self._responded_ids.clear()
+        self._terminal_requests.clear()
         self._started = False
 
     def _authenticate(
@@ -236,6 +253,30 @@ class CodexGateway:
                 if self._valid_id(resolved_id):
                     self._responded_ids.add(resolved_id)
 
+        response_id = self._response_id(message)
+        if response_id is not None:
+            request = self._terminal_requests.pop(response_id, None)
+            if request is not None and self._on_upstream_response is not None:
+                await self._observe(
+                    self._on_upstream_response(
+                        response_id,
+                        request[0],
+                        request[1],
+                        self._response_payload(message),
+                    )
+                )
+        elif request_id is None and isinstance(method, str):
+            params = message.get("params")
+            if self._on_upstream_notification is not None:
+                await self._observe(
+                    self._on_upstream_notification(
+                        ServerNotification(
+                            method,
+                            params if isinstance(params, dict) else {},
+                        )
+                    )
+                )
+
         await self._to_terminal.put(raw_message)
 
         if intercepted:
@@ -262,6 +303,19 @@ class CodexGateway:
     async def _handle_terminal_message(
         self, message: JsonObject, raw_message: str
     ) -> None:
+        outgoing_id = self._request_id(message)
+        if outgoing_id is not None:
+            method = message["method"]
+            params = message.get("params")
+            normalized_params = params if isinstance(params, dict) else {}
+            self._terminal_requests[outgoing_id] = (method, normalized_params)
+            if self._on_terminal_request is not None:
+                await self._observe(
+                    self._on_terminal_request(
+                        outgoing_id, method, normalized_params
+                    )
+                )
+
         request_id = self._response_id(message)
         if request_id is None or request_id not in self._intercepted_ids:
             await self._send_upstream(raw_message)
@@ -278,6 +332,20 @@ class CodexGateway:
             )
         except Exception:
             return
+
+    @staticmethod
+    async def _observe(callback: Awaitable[None]) -> None:
+        try:
+            await callback
+        except Exception:
+            # Observers are a side channel and must never break JSON-RPC forwarding.
+            return
+
+    @staticmethod
+    def _response_payload(message: JsonObject) -> JsonObject:
+        if "result" in message:
+            return {"result": message["result"]}
+        return {"error": message.get("error")}
 
     async def respond_upstream(
         self,

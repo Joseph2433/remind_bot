@@ -75,3 +75,41 @@ def test_launcher_reports_missing_codex(monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="Codex executable"):
         CodexTuiLauncher().run(CodexTuiOptions())
+
+
+def test_remote_launcher_uses_gateway_token_env_and_skips_notify(monkeypatch):
+    monkeypatch.setattr("lark_bot.codex_tui.shutil.which", lambda value: "C:/tools/codex.exe")
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return type("Result", (), {"returncode": 3})()
+
+    exit_code = CodexTuiLauncher(process_runner=run).run(
+        CodexTuiOptions(
+            args=["resume", "--last"],
+            remote_endpoint="ws://127.0.0.1:4321",
+            remote_auth_token="secret-token",
+        )
+    )
+
+    assert exit_code == 3
+    command, kwargs = calls[0]
+    assert command == [
+        "C:/tools/codex.exe",
+        "--remote",
+        "ws://127.0.0.1:4321",
+        "--remote-auth-token-env",
+        "LARK_BOT_CODEX_REMOTE_TOKEN",
+        "resume",
+        "--last",
+    ]
+    assert kwargs["env"]["LARK_BOT_CODEX_REMOTE_TOKEN"] == "secret-token"
+    assert "-c" not in command
+
+
+def test_remote_launcher_requires_endpoint_and_token_together(monkeypatch):
+    monkeypatch.setattr("lark_bot.codex_tui.shutil.which", lambda value: "codex")
+
+    with pytest.raises(ValueError, match="endpoint and token"):
+        CodexTuiLauncher().run(CodexTuiOptions(remote_endpoint="ws://127.0.0.1:1"))

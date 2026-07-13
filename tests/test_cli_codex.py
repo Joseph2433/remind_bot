@@ -72,20 +72,33 @@ def test_codex_hook_daemon_forward_has_short_timeout(monkeypatch):
 
 def test_bare_codex_launches_native_tui_and_forwards_arguments(monkeypatch):
     seen = []
+    requests = []
+
+    def daemon_request(method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        if method == "POST":
+            return {"session_id": "s1", "endpoint": "ws://127.0.0.1:9000", "remote_auth_token": "token"}
+        return None
 
     def run(self, options):
-        seen.append(options.args)
+        seen.append(options)
         return 9
 
+    monkeypatch.setattr("lark_bot.cli._daemon_request", daemon_request)
     monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", run)
     result = CliRunner().invoke(app, ["codex", "--model", "gpt-test", "hello"])
 
     assert result.exit_code == 9
-    assert seen == [["--model", "gpt-test", "hello"]]
+    assert seen[0].args == ["--model", "gpt-test", "hello"]
+    assert seen[0].remote_endpoint == "ws://127.0.0.1:9000"
+    assert seen[0].remote_auth_token == "token"
+    assert requests[0][0:2] == ("POST", "/interactive-sessions")
+    assert requests[-1][0:2] == ("DELETE", "/interactive-sessions/s1")
 
 
 def test_bare_codex_without_arguments_launches_native_tui(monkeypatch):
     seen = []
+    monkeypatch.setattr("lark_bot.cli._daemon_request", lambda method, path, **kwargs: {"session_id": "s1", "endpoint": "ws://127.0.0.1:1", "remote_auth_token": "t"} if method == "POST" else None)
     monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options.args) or 0)
 
     result = CliRunner().invoke(app, ["codex"])
@@ -96,12 +109,40 @@ def test_bare_codex_without_arguments_launches_native_tui(monkeypatch):
 
 def test_codex_resume_is_forwarded_to_native_tui(monkeypatch):
     seen = []
+    monkeypatch.setattr("lark_bot.cli._daemon_request", lambda method, path, **kwargs: {"session_id": "s1", "endpoint": "ws://127.0.0.1:1", "remote_auth_token": "t"} if method == "POST" else None)
     monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options.args) or 0)
 
     result = CliRunner().invoke(app, ["codex", "resume", "--last"])
 
     assert result.exit_code == 0
     assert seen == [["resume", "--last"]]
+
+
+def test_codex_no_lark_launches_directly_without_daemon(monkeypatch):
+    seen = []
+    monkeypatch.setattr("lark_bot.cli._daemon_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("daemon must not be called")))
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options) or 0)
+
+    result = CliRunner().invoke(app, ["codex", "--no-lark", "hello"])
+
+    assert result.exit_code == 0
+    assert seen[0].args == ["hello"]
+    assert seen[0].remote_endpoint is None
+    assert seen[0].callback_command == []
+
+
+def test_codex_cleanup_failure_does_not_mask_tui_exit_code(monkeypatch):
+    def daemon_request(method, path, **kwargs):
+        if method == "POST":
+            return {"session_id": "s1", "endpoint": "ws://127.0.0.1:1", "remote_auth_token": "t"}
+        raise RuntimeError("cleanup detail")
+
+    monkeypatch.setattr("lark_bot.cli._daemon_request", daemon_request)
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: 7)
+
+    result = CliRunner().invoke(app, ["codex"])
+
+    assert result.exit_code == 7
 
 
 def test_unattended_commands_live_under_codex_job(monkeypatch):

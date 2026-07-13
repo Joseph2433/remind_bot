@@ -436,6 +436,58 @@ def test_close_releases_listener_and_upstream_connection() -> None:
     asyncio.run(scenario())
 
 
+def test_observer_correlates_thread_start_response_and_notifications() -> None:
+    async def scenario() -> None:
+        terminal_requests = []
+        upstream_responses = []
+        notifications = []
+
+        async def on_terminal_request(request_id, method, params):
+            terminal_requests.append((request_id, method, params))
+
+        async def on_upstream_response(request_id, method, params, payload):
+            upstream_responses.append((request_id, method, params, payload))
+
+        async def on_notification(notification):
+            notifications.append(notification)
+
+        async with FakeUpstream() as upstream:
+            gateway = CodexGateway(
+                upstream.endpoint,
+                on_server_request=noop_server_request,
+                on_terminal_response=allow_terminal_response,
+                on_terminal_request=on_terminal_request,
+                on_upstream_response=on_upstream_response,
+                on_upstream_notification=on_notification,
+                token="test-token",
+            )
+            await gateway.start()
+            upstream_socket = await upstream.client()
+            try:
+                async with connect(gateway.endpoint, additional_headers={"Authorization": "Bearer test-token"}) as terminal:
+                    request = {"id": 41, "method": "thread/start", "params": {"cwd": "C:/work"}}
+                    await terminal.send(json.dumps(request))
+                    assert await upstream.next_received() == request
+                    await _wait_until(lambda: bool(terminal_requests))
+
+                    response = {"id": 41, "result": {"thread": {"id": "thread-1"}}}
+                    await upstream_socket.send(json.dumps(response))
+                    assert json.loads(await terminal.recv()) == response
+
+                    notification = {"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}}
+                    await upstream_socket.send(json.dumps(notification))
+                    assert json.loads(await terminal.recv()) == notification
+                    await _wait_until(lambda: bool(upstream_responses) and bool(notifications))
+
+                    assert terminal_requests == [(41, "thread/start", {"cwd": "C:/work"})]
+                    assert upstream_responses == [(41, "thread/start", {"cwd": "C:/work"}, {"result": {"thread": {"id": "thread-1"}}})]
+                    assert notifications[0].method == "turn/completed"
+            finally:
+                await gateway.close()
+
+    asyncio.run(scenario())
+
+
 async def _wait_until(predicate: Callable[[], bool]) -> None:
     while not predicate():
         await asyncio.sleep(0)

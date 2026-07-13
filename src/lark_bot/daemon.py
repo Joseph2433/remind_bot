@@ -12,10 +12,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from lark_bot.codex_app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
+from lark_bot.codex_interactive import InteractiveSessionManager
 from lark_bot.codex_models import CodexSession, InteractionKind, SessionStatus
 from lark_bot.codex_orchestrator import CodexOrchestrator
 from lark_bot.lark_control import LarkControlRouter, LarkLongConnection
@@ -71,14 +72,23 @@ class SessionCreate(BaseModel):
     sandbox: str = Field(default="workspace-write", pattern="^(read-only|workspace-write)$")
 
 
+class InteractiveSessionCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: str = Field(default="interactive", min_length=1, max_length=200)
+    cwd: str = Field(min_length=1, max_length=4096)
+    model: str | None = Field(default=None, max_length=200)
+    sandbox: str = Field(default="workspace-write", pattern="^(read-only|workspace-write)$")
+
+
 def _public_session(session: CodexSession) -> dict[str, Any]:
     return session.model_dump(mode="json")
 
 
 class DaemonRuntime:
-    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any, *, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any, *, interactive_manager: Any | None = None, now: Callable[[], datetime] | None = None) -> None:
         self.settings, self.store, self.orchestrator = settings, store, orchestrator
         self.lark_client, self.long_connection, self.control_router = lark_client, long_connection, control_router
+        self.interactive_manager = interactive_manager
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._tasks: list[asyncio.Task[None]] = []
         self._closed = False
@@ -88,6 +98,8 @@ class DaemonRuntime:
         try:
             self._drain_spool()
             await self.orchestrator.start()
+            if self.interactive_manager is not None:
+                await self.interactive_manager.start()
             await self.long_connection.start()
             self._tasks = [asyncio.create_task(self._route_lark(), name="lark-event-router"), asyncio.create_task(self._outbox_worker(), name="notification-outbox")]
             self._tasks.append(
@@ -209,7 +221,11 @@ class DaemonRuntime:
         self._closed = True
         for task in self._tasks: task.cancel()
         if self._tasks: await asyncio.gather(*self._tasks, return_exceptions=True)
-        for close in (self.long_connection.close, self.orchestrator.close):
+        closes = [self.long_connection.close]
+        if self.interactive_manager is not None:
+            closes.append(self.interactive_manager.close)
+        closes.append(self.orchestrator.close)
+        for close in closes:
             try: await close()
             except BaseException: pass
         try: self.lark_client.close()
@@ -245,6 +261,44 @@ def create_daemon_app(runtime: DaemonRuntime, *, token: str) -> FastAPI:
         except (ProcessExitedError, ServerRpcError, RuntimeError):
             raise HTTPException(status_code=502, detail="Codex app-server unavailable") from None
         return _public_session(session)
+
+    @app.post(prefix + "/interactive-sessions", status_code=201, dependencies=[Depends(authenticate)])
+    async def create_interactive_session(request: InteractiveSessionCreate):
+        manager = runtime.interactive_manager
+        if manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="interactive Codex sessions are not configured",
+            )
+        try:
+            descriptor = await manager.create_session(
+                name=request.name,
+                cwd=request.cwd,
+                model=request.model,
+                sandbox=request.sandbox,
+            )
+        except (OSError, RuntimeError):
+            raise HTTPException(
+                status_code=502,
+                detail="interactive Codex app-server unavailable",
+            ) from None
+        return {
+            "session_id": descriptor.session_id,
+            "endpoint": descriptor.endpoint,
+            "remote_auth_token": descriptor.remote_auth_token,
+        }
+
+    @app.delete(prefix + "/interactive-sessions/{session_id}", status_code=204, dependencies=[Depends(authenticate)])
+    async def close_interactive_session(session_id: str):
+        manager = runtime.interactive_manager
+        if manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="interactive Codex sessions are not configured",
+            )
+        if not await manager.close_session(session_id):
+            raise HTTPException(status_code=404, detail="interactive session not found")
+        return Response(status_code=204)
 
     @app.get(prefix + "/sessions", dependencies=[Depends(authenticate)])
     async def list_sessions(status: SessionStatus | None = None):
@@ -284,4 +338,16 @@ def build_runtime(settings: Any) -> DaemonRuntime:
     orchestrator = CodexOrchestrator(store, app_server, now=lambda: datetime.now(timezone.utc), id_factory=lambda: str(uuid.uuid4()), interaction_timeout_seconds=settings.interaction_timeout_seconds, notification_delay_seconds=settings.notification_delay_seconds)
     lark = LarkBotClient(app_id=settings.lark_app_id, app_secret=settings.lark_app_secret, receive_id=settings.lark_receive_id, receive_id_type=settings.lark_receive_id_type, base_url=settings.lark_base_url, timeout_seconds=settings.http_timeout_seconds)
     connection = LarkLongConnection(settings.lark_app_id, settings.lark_app_secret, queue_capacity=settings.lark_event_queue_capacity)
-    return DaemonRuntime(settings, store, orchestrator, lark, connection, LarkControlRouter(store, orchestrator))
+    interactive_manager = InteractiveSessionManager(
+        orchestrator,
+        codex_path=settings.codex_path,
+    )
+    return DaemonRuntime(
+        settings,
+        store,
+        orchestrator,
+        lark,
+        connection,
+        LarkControlRouter(store, orchestrator),
+        interactive_manager=interactive_manager,
+    )

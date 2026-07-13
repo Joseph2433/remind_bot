@@ -198,6 +198,27 @@ def test_interactive_session_is_created_without_prompt_and_bound_to_external_thr
     run(scenario())
 
 
+def test_close_interactive_session_does_not_interrupt_managed_app_server():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator("session-1")
+        session = await orchestrator.create_interactive_session(
+            "interactive", "C:/workspace"
+        )
+        assert orchestrator.bind_interactive_thread(
+            session.id, "external-thread", "external-turn"
+        )
+
+        assert await orchestrator.close_interactive_session(session.id)
+
+        closed = store.get_session(session.id)
+        assert closed.status is SessionStatus.CANCELLED
+        assert app.interrupt_calls == []
+        event = orchestrator.events.get_nowait()
+        assert event.event_type is OrchestratorEventType.SESSION_COMPLETED
+
+    run(scenario())
+
+
 def test_create_session_failure_marks_failed_with_redacted_summary_and_reraises():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator("session-1")
