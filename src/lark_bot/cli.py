@@ -103,6 +103,7 @@ _CODEX_GLOBAL_FLAG_OPTIONS = frozenset(
         "--strict-config",
     }
 )
+_CODEX_ATTACHED_VALUE_SHORT_PREFIXES = ("-c", "-i", "-m", "-p", "-s", "-C", "-a")
 
 
 def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
@@ -119,6 +120,12 @@ def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
 
         option, separator, _ = token.partition("=")
         if separator and option in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 1
+            continue
+        if any(
+            len(token) > len(prefix) and token.startswith(prefix)
+            for prefix in _CODEX_ATTACHED_VALUE_SHORT_PREFIXES
+        ):
             index += 1
             continue
         if token in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:

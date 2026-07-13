@@ -184,6 +184,8 @@ def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, pic
     [
         ["--model", "gpt-test", "resume"],
         ["-m", "gpt-test", "resume", "--all"],
+        ["-mgpt-test", "resume"],
+        ["-C.", "resume", "--all"],
     ],
 )
 def test_codex_resume_picker_after_global_options_is_rejected_before_daemon(
@@ -229,6 +231,13 @@ def test_remote_resume_picker_scanner_stops_before_resume(args):
     [
         ["--model=gpt-test", "resume"],
         ["--oss", "resume"],
+        ["-cfeature=true", "resume"],
+        ["-iimage.png", "resume"],
+        ["-mgpt-test", "resume"],
+        ["-pdev", "resume"],
+        ["-sworkspace-write", "resume"],
+        ["-C.", "resume", "--all"],
+        ["-aon-request", "resume"],
     ],
 )
 def test_remote_resume_picker_scanner_supports_global_option_forms(args):
