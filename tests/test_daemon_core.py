@@ -23,6 +23,7 @@ class FakeStore:
         self.failures = []
         self.closed = False
         self.events = set()
+        self.outbox_sent = asyncio.Event()
 
     def get_session(self, session_id): return self.sessions.get(session_id)
     def list_sessions(self, status=None): return [s for s in self.sessions.values() if status is None or s.status is status]
@@ -35,7 +36,10 @@ class FakeStore:
         self.items.append(NotificationOutboxItem(id=len(self.items)+1, attempt_count=0, next_attempt_at=next_attempt_at, created_at=created_at, **kwargs)); return len(self.items)
     def list_due_outbox(self, *, now, **kwargs): return [item for item in self.items if item.next_attempt_at <= now and item.id not in self.sent and item.id not in {failure[0] for failure in self.failures}]
     def attach_lark_message_id(self, interaction_id, message_id): self.attached.append((interaction_id, message_id)); return True
-    def mark_outbox_sent(self, outbox_id, **kwargs): self.sent.append(outbox_id); return True
+    def mark_outbox_sent(self, outbox_id, **kwargs):
+        self.sent.append(outbox_id)
+        self.outbox_sent.set()
+        return True
     def record_outbox_failure(self, outbox_id, **kwargs): self.failures.append((outbox_id, kwargs)); return True
     def close(self): self.closed = True
 
@@ -64,8 +68,13 @@ class FakeLongConnection:
 
 
 class FakeLark:
-    def __init__(self): self.messages, self.closed = [], False
-    def send_text(self, text): self.messages.append(text); return "m1"
+    def __init__(self):
+        self.messages, self.closed = [], False
+
+    def send_text(self, text):
+        self.messages.append(text)
+        return "m1"
+
     def close(self): self.closed = True
 
 
@@ -177,8 +186,19 @@ def test_spool_hook_uses_notification_delay(workspace_tmp_path):
 def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
     async def scenario():
         runtime, store, orchestrator, connection, lark = _runtime(workspace_tmp_path)
-        store.enqueue_outbox(notification_type="orchestrator:interaction_requested", payload_summary="approve command", session_id="s1", interaction_id="i1")
-        await runtime.start(); await asyncio.sleep(0.05); await runtime.close()
+        store.enqueue_outbox(
+            notification_type="orchestrator:interaction_requested",
+            payload_summary="approve command",
+            session_id="s1",
+            interaction_id="i1",
+            created_at=NOW,
+            next_attempt_at=NOW,
+        )
+        await runtime.start()
+        try:
+            await asyncio.wait_for(store.outbox_sent.wait(), timeout=1)
+        finally:
+            await runtime.close()
         assert orchestrator.started and orchestrator.closed and connection.started and connection.closed
         assert store.attached == [("i1", "m1")] and store.sent == [1]
         assert any(
