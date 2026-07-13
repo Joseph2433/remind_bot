@@ -66,9 +66,35 @@ async def _rpc(
             if not isinstance(message, dict):
                 continue
             response_id = message.get("id")
+            if "method" in message:
+                valid_server_id = type(response_id) is int or isinstance(
+                    response_id, str
+                )
+                if (
+                    valid_server_id
+                    and isinstance(message.get("method"), str)
+                    and "params" in message
+                ):
+                    await socket.send(
+                        json.dumps(
+                            {
+                                "id": response_id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": "Method not supported",
+                                },
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
+                continue
             if type(response_id) is not type(request_id) or response_id != request_id:
                 continue
-            if "error" in message:
+            has_result = "result" in message
+            has_error = "error" in message
+            if has_result == has_error:
+                continue
+            if has_error:
                 raise RuntimeError("Codex app-server RPC failed")
             result = message.get("result")
             return result if isinstance(result, dict) else {}
@@ -105,6 +131,10 @@ def _first_thread_id(result: dict[str, Any]) -> str | None:
     return None
 
 
+async def _close_socket(socket: ProbeSocket, *, timeout: float) -> None:
+    await asyncio.wait_for(socket.close(), timeout=timeout)
+
+
 async def probe_remote_clients(
     primary: ProbeSocket,
     secondary: ProbeSocket,
@@ -125,21 +155,28 @@ async def probe_remote_clients(
         multi_client = True
         both_initialized = True
 
-        primary_list = await _rpc(primary, 2, "thread/list", {}, timeout=timeout)
-        secondary_list = await _rpc(secondary, 2, "thread/list", {}, timeout=timeout)
-        both_listed_threads = True
-
-        thread_id = _first_thread_id(secondary_list) or _first_thread_id(primary_list)
-        if thread_id is not None:
-            resume_attempted = True
-            await _rpc(
-                secondary,
-                3,
-                "thread/resume",
-                {"threadId": thread_id},
-                timeout=timeout,
+        try:
+            primary_list = await _rpc(primary, 2, "thread/list", {}, timeout=timeout)
+            secondary_list = await _rpc(
+                secondary, 2, "thread/list", {}, timeout=timeout
             )
-            resume_succeeded = True
+            both_listed_threads = True
+
+            thread_id = _first_thread_id(secondary_list) or _first_thread_id(
+                primary_list
+            )
+            if thread_id is not None:
+                resume_attempted = True
+                await _rpc(
+                    secondary,
+                    3,
+                    "thread/resume",
+                    {"threadId": thread_id},
+                    timeout=timeout,
+                )
+                resume_succeeded = True
+        finally:
+            await _close_socket(secondary, timeout=timeout)
 
         # Recheck primary only after the optional resume succeeded, or when no
         # resume was needed.  Exceptions above intentionally skip this operation.
@@ -153,7 +190,7 @@ async def probe_remote_clients(
             resume_succeeded=resume_succeeded,
             primary_survived=primary_survived,
         )
-    except BaseException as error:
+    except Exception as error:
         return ProbeResult(
             multi_client=multi_client,
             both_initialized=both_initialized,
@@ -185,7 +222,10 @@ async def _stop_process(process: Any, *, timeout: float) -> None:
         await asyncio.wait_for(process.wait(), timeout=timeout)
     except TimeoutError:
         process.kill()
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except TimeoutError:
+            pass
 
 
 async def run_local_probe(
@@ -202,14 +242,14 @@ async def run_local_probe(
 ) -> ProbeResult:
     try:
         executable = which(codex_path)
-    except BaseException as error:
+    except Exception as error:
         return ProbeResult(error_type=type(error).__name__)
     if executable is None:
         return ProbeResult(error_type="FileNotFoundError")
 
     try:
         codex_version = version_reader(executable)
-    except BaseException:
+    except Exception:
         codex_version = "unknown"
 
     process: Any | None = None
@@ -225,20 +265,20 @@ async def run_local_probe(
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await wait_listener(endpoint, process)
+        await asyncio.wait_for(wait_listener(endpoint, process), timeout=timeout)
         primary = await connector(endpoint, proxy=None, open_timeout=timeout)
         sockets.append(primary)
         secondary = await connector(endpoint, proxy=None, open_timeout=timeout)
         sockets.append(secondary)
         result = await probe_remote_clients(primary, secondary, timeout=timeout)
         return ProbeResult(**{**result.to_public_dict(), "codex_version": codex_version})
-    except BaseException as error:
+    except Exception as error:
         return ProbeResult(error_type=type(error).__name__, codex_version=codex_version)
     finally:
         for socket in reversed(sockets):
             try:
-                await socket.close()
-            except BaseException:
+                await _close_socket(socket, timeout=close_timeout)
+            except Exception:
                 pass
         if process is not None:
             await _stop_process(process, timeout=close_timeout)
