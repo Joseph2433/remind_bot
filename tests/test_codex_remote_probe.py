@@ -628,6 +628,10 @@ def test_rpc_ignores_nonresponses_and_rejects_same_id_server_request() -> None:
                             "params": {},
                         },
                         {
+                            "id": "server-no-params",
+                            "method": "server/request",
+                        },
+                        {
                             "id": True,
                             "method": "server/request",
                             "params": {},
@@ -661,6 +665,10 @@ def test_rpc_ignores_nonresponses_and_rejects_same_id_server_request() -> None:
             {"id": 7, "method": "thread/list", "params": {}},
             {
                 "id": "server-42",
+                "error": {"code": -32601, "message": "Method not supported"},
+            },
+            {
+                "id": "server-no-params",
                 "error": {"code": -32601, "message": "Method not supported"},
             },
             {
@@ -868,6 +876,86 @@ def test_local_probe_cancellation_propagates_after_cleanup() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert primary.closed and secondary.closed
+        assert process.terminated and process.wait_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_local_probe_cancellation_during_process_acquisition_reaps_process() -> None:
+    async def scenario() -> None:
+        produced: list[FakeProcess] = []
+        process_created = asyncio.Event()
+
+        async def process_factory(*args: object, **kwargs: object) -> FakeProcess:
+            del args, kwargs
+            process = FakeProcess()
+            produced.append(process)
+            process_created.set()
+            await asyncio.sleep(0.01)
+            return process
+
+        task = asyncio.create_task(
+            run_local_probe(
+                which=lambda value: "C:/tools/codex.exe",
+                process_factory=process_factory,
+                connector=lambda *args, **kwargs: asyncio.sleep(0),
+                wait_listener=lambda endpoint, child: asyncio.sleep(0),
+                endpoint_factory=lambda: "ws://127.0.0.1:6123",
+                version_reader=lambda executable: "codex-cli test",
+                close_timeout=0.1,
+            )
+        )
+        await process_created.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(produced) == 1
+        assert produced[0].terminated and produced[0].wait_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_local_probe_cancellation_during_connector_closes_all_resources() -> None:
+    async def scenario() -> None:
+        process = FakeProcess()
+        primary = FakeSocket("primary", [], [])
+        produced_secondary: list[FakeSocket] = []
+        secondary_created = asyncio.Event()
+        connector_calls = 0
+
+        async def connector(*args: object, **kwargs: object) -> FakeSocket:
+            nonlocal connector_calls
+            del args, kwargs
+            connector_calls += 1
+            if connector_calls == 1:
+                return primary
+            secondary = FakeSocket("secondary", [], [])
+            produced_secondary.append(secondary)
+            secondary_created.set()
+            await asyncio.sleep(0.01)
+            return secondary
+
+        task = asyncio.create_task(
+            run_local_probe(
+                which=lambda value: "C:/tools/codex.exe",
+                process_factory=lambda *args, **kwargs: asyncio.sleep(
+                    0, result=process
+                ),
+                connector=connector,
+                wait_listener=lambda endpoint, child: asyncio.sleep(0),
+                endpoint_factory=lambda: "ws://127.0.0.1:6123",
+                version_reader=lambda executable: "codex-cli test",
+                close_timeout=0.1,
+            )
+        )
+        await secondary_created.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(produced_secondary) == 1
+        assert primary.closed and produced_secondary[0].closed
         assert process.terminated and process.wait_calls == 1
 
     asyncio.run(scenario())

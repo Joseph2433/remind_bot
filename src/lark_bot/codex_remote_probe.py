@@ -6,11 +6,14 @@ import shutil
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from websockets.asyncio.client import connect
 
 from lark_bot.codex_interactive import _loopback_endpoint, _wait_for_listener
+
+
+_T = TypeVar("_T")
 
 
 class ProbeSocket(Protocol):
@@ -73,7 +76,6 @@ async def _rpc(
                 if (
                     valid_server_id
                     and isinstance(message.get("method"), str)
-                    and "params" in message
                 ):
                     await socket.send(
                         json.dumps(
@@ -228,6 +230,62 @@ async def _stop_process(process: Any, *, timeout: float) -> None:
             pass
 
 
+def _schedule_late_cleanup(
+    task: asyncio.Future[_T],
+    cleanup: Callable[[_T], Awaitable[None]],
+) -> None:
+    def cleanup_when_done(done: asyncio.Future[_T]) -> None:
+        try:
+            resource = done.result()
+        except BaseException:
+            return
+        loop = done.get_loop()
+        if loop.is_closed():
+            return
+        cleanup_task = loop.create_task(cleanup(resource))
+
+        def consume_cleanup_result(completed: asyncio.Task[None]) -> None:
+            try:
+                completed.result()
+            except BaseException:
+                pass
+
+        cleanup_task.add_done_callback(consume_cleanup_result)
+
+    task.add_done_callback(cleanup_when_done)
+
+
+async def _acquire_resource(
+    acquisition: Awaitable[_T],
+    *,
+    cleanup: Callable[[_T], Awaitable[None]],
+    timeout: float,
+) -> _T:
+    task = asyncio.ensure_future(acquisition)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancelled:
+        try:
+            resource = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except TimeoutError:
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if task not in done:
+                _schedule_late_cleanup(task, cleanup)
+                raise cancelled
+            try:
+                resource = task.result()
+            except BaseException:
+                raise cancelled
+        except BaseException:
+            raise cancelled
+        try:
+            await cleanup(resource)
+        except Exception:
+            pass
+        raise cancelled
+
+
 async def run_local_probe(
     codex_path: str = "codex",
     *,
@@ -254,21 +312,43 @@ async def run_local_probe(
 
     process: Any | None = None
     sockets: list[ProbeSocket] = []
+
+    async def cleanup_process(acquired: Any) -> None:
+        await _stop_process(acquired, timeout=close_timeout)
+
+    async def cleanup_socket(acquired: ProbeSocket) -> None:
+        try:
+            await _close_socket(acquired, timeout=close_timeout)
+        except Exception:
+            pass
+
     try:
         endpoint = endpoint_factory()
-        process = await process_factory(
-            executable,
-            "app-server",
-            "--listen",
-            endpoint,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        process = await _acquire_resource(
+            process_factory(
+                executable,
+                "app-server",
+                "--listen",
+                endpoint,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            ),
+            cleanup=cleanup_process,
+            timeout=close_timeout,
         )
         await asyncio.wait_for(wait_listener(endpoint, process), timeout=timeout)
-        primary = await connector(endpoint, proxy=None, open_timeout=timeout)
+        primary = await _acquire_resource(
+            connector(endpoint, proxy=None, open_timeout=timeout),
+            cleanup=cleanup_socket,
+            timeout=close_timeout,
+        )
         sockets.append(primary)
-        secondary = await connector(endpoint, proxy=None, open_timeout=timeout)
+        secondary = await _acquire_resource(
+            connector(endpoint, proxy=None, open_timeout=timeout),
+            cleanup=cleanup_socket,
+            timeout=close_timeout,
+        )
         sockets.append(secondary)
         result = await probe_remote_clients(primary, secondary, timeout=timeout)
         return ProbeResult(**{**result.to_public_dict(), "codex_version": codex_version})
