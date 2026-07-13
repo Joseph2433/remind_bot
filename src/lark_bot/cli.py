@@ -3,19 +3,22 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import uuid
 from pathlib import Path
 from collections.abc import Sequence
 
 import httpx
+import click
 from pydantic import ValidationError
 import typer
 import uvicorn
+from typer.core import TyperGroup
 
 from lark_bot.adapters.codex import CodexEvent, codex_event_to_notification
 from lark_bot.config import Settings, build_config_checks, get_settings, public_settings_summary
+from lark_bot.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
+from lark_bot.codex_tui import CodexTuiLauncher, CodexTuiOptions
 from lark_bot.detector import detect_output
-from lark_bot.daemon import MAX_HOOK_BYTES, build_runtime, create_daemon_app, ensure_daemon_token
+from lark_bot.daemon import build_runtime, create_daemon_app, ensure_daemon_token
 from lark_bot.hooks import check_hooks, install_hooks, uninstall_hooks
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 from lark_bot.notifier.lark import LarkBotClient
@@ -23,9 +26,40 @@ from lark_bot.runner import run_command
 from lark_bot.storage.sqlite import SQLiteNotificationStore
 
 app = typer.Typer(help="Lark Bot: Lark/Feishu notifications for code agent tasks.")
-codex_app = typer.Typer(help="Manage Codex sessions through the local daemon.")
+
+
+class _CodexFallbackGroup(TyperGroup):
+    """Treat unknown Codex subcommands/prompts as native TUI arguments."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+
+        @click.pass_context
+        def forward(sub_ctx: click.Context) -> None:
+            _run_codex_tui([cmd_name, *sub_ctx.args])
+
+        return click.Command(
+            name=cmd_name,
+            callback=forward,
+            add_help_option=False,
+            context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+            hidden=True,
+        )
+
+
+codex_app = typer.Typer(
+    cls=_CodexFallbackGroup,
+    help="Launch native Codex or manage unattended jobs.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+job_app = typer.Typer(help="Manage unattended Codex sessions through the local daemon.")
 hooks_app = typer.Typer(help="Manage project Codex hooks.")
 app.add_typer(codex_app, name="codex")
+codex_app.add_typer(job_app, name="job")
 codex_app.add_typer(hooks_app, name="hooks")
 
 
@@ -168,6 +202,20 @@ def _daemon_request(method: str, path: str, *, json_body: dict | None = None) ->
         raise typer.BadParameter(f"Local Codex daemon request failed ({type(error).__name__}).") from None
 
 
+def _daemon_hook_request(payload: dict[str, str]) -> None:
+    """Use a very short bound so Codex notify never waits on a sick daemon."""
+
+    settings = get_settings()
+    token = ensure_daemon_token(settings.daemon_token_path)
+    response = httpx.post(
+        f"http://{settings.daemon_host}:{settings.daemon_port}/api/v1/codex/hooks",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=min(settings.http_timeout_seconds, 0.25),
+    )
+    response.raise_for_status()
+
+
 def _emit_result(value: object, json_output: bool) -> None:
     if json_output:
         typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
@@ -178,7 +226,26 @@ def _emit_result(value: object, json_output: bool) -> None:
         typer.echo(f"{value.get('id', 'ok')}  {value.get('status', 'ok')}  {value.get('name', '')}".rstrip())
 
 
-@codex_app.command("start")
+def _run_codex_tui(args: Sequence[str]) -> None:
+    settings = get_settings()
+    try:
+        exit_code = CodexTuiLauncher().run(
+            CodexTuiOptions(args=list(args), codex_path=settings.codex_path)
+        )
+    except FileNotFoundError as error:
+        raise typer.BadParameter(str(error)) from None
+    raise typer.Exit(exit_code)
+
+
+@codex_app.callback()
+def codex_command(ctx: typer.Context) -> None:
+    """Launch the native Codex TUI when no Lark Bot subcommand is selected."""
+
+    if ctx.invoked_subcommand is None:
+        _run_codex_tui(ctx.args)
+
+
+@job_app.command("start")
 def codex_start(
     prompt: str = typer.Argument(...),
     name: str = typer.Option("task", "--name", "-n"),
@@ -194,18 +261,18 @@ def codex_start(
     _emit_result(result, json_output)
 
 
-@codex_app.command("list")
+@job_app.command("list")
 def codex_list(status: str | None = typer.Option(None, "--status"), json_output: bool = typer.Option(False, "--json")) -> None:
     query = f"?status={status}" if status else ""
     _emit_result(_daemon_request("GET", f"/sessions{query}"), json_output)
 
 
-@codex_app.command("show")
+@job_app.command("show")
 def codex_show(session_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
     _emit_result(_daemon_request("GET", f"/sessions/{session_id}"), json_output)
 
 
-@codex_app.command("cancel")
+@job_app.command("cancel")
 def codex_cancel(session_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
     _emit_result(_daemon_request("POST", f"/sessions/{session_id}/cancel"), json_output)
 
@@ -228,41 +295,25 @@ def hooks_uninstall(project: Path = typer.Option(Path("."), "--project")) -> Non
     typer.echo(f"uninstalled: {uninstall_hooks(project)}")
 
 
-@app.command("codex-hook")
-def codex_hook() -> None:
+@app.command(
+    "codex-hook",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def codex_hook(ctx: typer.Context) -> None:
     """Forward a Codex project hook without ever blocking Codex."""
-    raw = sys.stdin.read(MAX_HOOK_BYTES + 1)
+    callback_argv = ["codex-hook", *ctx.args]
+    raw = read_stdin_payload(callback_argv, sys.stdin.read)
     try:
-        encoded_size = len(raw.encode("utf-8"))
-    except UnicodeError:
-        return
-    if encoded_size > MAX_HOOK_BYTES:
-        return
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeError):
-        return
-    if not isinstance(payload, dict):
-        return
-    event_name = next((payload.get(key) for key in ("hook_event_name", "event_name", "hook_name") if isinstance(payload.get(key), str)), None)
-    if event_name not in {"SessionStart", "PermissionRequest", "Stop"}:
-        return
-    safe = {"hook_event_name": event_name}
-    if isinstance(payload.get("event_id"), str):
-        safe["event_id"] = payload["event_id"][:200]
-    try:
-        _daemon_request("POST", "/hooks", json_body=safe)
+        spool = get_settings().daemon_token_path.parent / "spool"
     except Exception:
-        try:
-            spool = get_settings().daemon_token_path.parent / "spool"
-        except Exception:
-            spool = Path(".lark-bot/spool")
-        try:
-            spool.mkdir(parents=True, exist_ok=True)
-            path = spool / f"hook-{uuid.uuid4().hex}.json"
-            path.write_text(json.dumps(safe, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        spool = Path(".lark-bot/spool")
+    handle_callback(
+        argv=callback_argv,
+        stdin=raw,
+        sender=_daemon_hook_request,
+        spool_dir=spool,
+    )
+    forward_existing_notify(argv=callback_argv, stdin=raw)
 
 
 def _send_with_dedupe(request: NotificationRequest, settings: Settings) -> None:
