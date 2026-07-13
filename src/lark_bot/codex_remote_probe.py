@@ -53,24 +53,25 @@ async def _rpc(
     thread IDs, or authentication material.
     """
 
-    await socket.send(
-        json.dumps(
-            {"id": request_id, "method": method, "params": params},
-            separators=(",", ":"),
+    async with asyncio.timeout(timeout):
+        await socket.send(
+            json.dumps(
+                {"id": request_id, "method": method, "params": params},
+                separators=(",", ":"),
+            )
         )
-    )
-    while True:
-        raw = await asyncio.wait_for(socket.recv(), timeout=timeout)
-        message = json.loads(raw)
-        if not isinstance(message, dict):
-            continue
-        response_id = message.get("id")
-        if type(response_id) is not type(request_id) or response_id != request_id:
-            continue
-        if "error" in message:
-            raise RuntimeError("Codex app-server RPC failed")
-        result = message.get("result")
-        return result if isinstance(result, dict) else {}
+        while True:
+            raw = await socket.recv()
+            message = json.loads(raw)
+            if not isinstance(message, dict):
+                continue
+            response_id = message.get("id")
+            if type(response_id) is not type(request_id) or response_id != request_id:
+                continue
+            if "error" in message:
+                raise RuntimeError("Codex app-server RPC failed")
+            result = message.get("result")
+            return result if isinstance(result, dict) else {}
 
 
 async def _initialize(socket: ProbeSocket, name: str, *, timeout: float) -> None:

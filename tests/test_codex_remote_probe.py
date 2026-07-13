@@ -6,8 +6,11 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from lark_bot.codex_remote_probe import (
     ProbeResult,
+    _rpc,
     probe_remote_clients,
     run_local_probe,
 )
@@ -501,5 +504,110 @@ def test_local_probe_kills_and_reaps_process_when_termination_times_out() -> Non
         assert process.terminated and process.killed
         assert process.returncode == -9
         assert process.wait_calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_rpc_timeout_bounds_notification_flood() -> None:
+    async def scenario() -> None:
+        class NotificationFlood:
+            async def send(self, raw: str) -> None:
+                del raw
+
+            async def recv(self) -> str:
+                await asyncio.sleep(0.001)
+                return json.dumps({"method": "notice", "params": {}})
+
+            async def close(self) -> None:
+                return None
+
+        task = asyncio.create_task(
+            _rpc(NotificationFlood(), 7, "thread/list", {}, timeout=0.01)
+        )
+        await asyncio.sleep(0.03)
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            pytest.fail("RPC timeout must cover the entire receive loop")
+        with pytest.raises(asyncio.TimeoutError):
+            task.result()
+
+    asyncio.run(scenario())
+
+
+def test_local_probe_reports_missing_executable_without_starting_anything() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+
+        async def process_factory(*args: object, **kwargs: object) -> FakeProcess:
+            del args, kwargs
+            calls.append("process")
+            return FakeProcess()
+
+        async def connector(*args: object, **kwargs: object) -> FakeSocket:
+            del args, kwargs
+            calls.append("connector")
+            raise AssertionError("connector must not run")
+
+        result = await run_local_probe(
+            which=lambda value: None,
+            process_factory=process_factory,
+            connector=connector,
+            wait_listener=lambda endpoint, child: asyncio.sleep(0),
+            endpoint_factory=lambda: "ws://127.0.0.1:6123",
+            version_reader=lambda executable: "unreachable",
+        )
+
+        assert result.error_type == "FileNotFoundError"
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
+def test_local_probe_version_reader_failure_keeps_probe_result_and_reaps() -> None:
+    async def scenario() -> None:
+        process = FakeProcess()
+        primary = FakeSocket(
+            "primary",
+            initialize_script("lark_bot_probe_primary")
+            + [
+                rpc("thread/list", 2, {"id": 2, "result": {"data": []}}),
+                rpc("thread/list", 3, {"id": 3, "result": {"data": []}}),
+            ],
+            [],
+        )
+        secondary = FakeSocket(
+            "secondary",
+            initialize_script("lark_bot_probe_secondary")
+            + [rpc("thread/list", 2, {"id": 2, "result": {"data": []}})],
+            [],
+        )
+        sockets = iter([primary, secondary])
+
+        async def connector(*args: object, **kwargs: object) -> FakeSocket:
+            del args, kwargs
+            return next(sockets)
+
+        def version_reader(executable: str) -> str:
+            del executable
+            raise OSError("version unavailable")
+
+        result = await run_local_probe(
+            which=lambda value: "C:/tools/codex.exe",
+            process_factory=lambda *args, **kwargs: asyncio.sleep(0, result=process),
+            connector=connector,
+            wait_listener=lambda endpoint, child: asyncio.sleep(0),
+            endpoint_factory=lambda: "ws://127.0.0.1:6123",
+            version_reader=version_reader,
+        )
+
+        assert result.error_type is None
+        assert result.codex_version == "unknown"
+        assert result.primary_survived is True
+        assert primary.closed and secondary.closed
+        assert process.terminated and process.wait_calls == 1
 
     asyncio.run(scenario())
