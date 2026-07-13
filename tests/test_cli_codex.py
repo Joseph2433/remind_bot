@@ -3,7 +3,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from lark_bot.cli import app, build_codex_notification_from_json
+from lark_bot.cli import _uses_remote_resume_picker, app, build_codex_notification_from_json
 from lark_bot.models import TaskStatus
 
 
@@ -177,6 +177,62 @@ def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, pic
     assert "explicit session ID" in result.output
     assert "--no-lark" in result.output
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "picker_args",
+    [
+        ["--model", "gpt-test", "resume"],
+        ["-m", "gpt-test", "resume", "--all"],
+    ],
+)
+def test_codex_resume_picker_after_global_options_is_rejected_before_daemon(
+    monkeypatch, picker_args
+):
+    calls = []
+    monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli._daemon_request",
+        lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli.CodexTuiLauncher.run",
+        lambda self, options: calls.append(("launcher", options)) or 0,
+    )
+
+    result = CliRunner().invoke(app, ["codex", *picker_args])
+
+    assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
+    assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
+    assert "--no-lark" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--model", "gpt-test", "exec", "resume"],
+        ["--model", "gpt-test", "--", "resume"],
+    ],
+)
+def test_remote_resume_picker_scanner_stops_before_resume(args):
+    assert _uses_remote_resume_picker(args) is False
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--model=gpt-test", "resume"],
+        ["--oss", "resume"],
+    ],
+)
+def test_remote_resume_picker_scanner_supports_global_option_forms(args):
+    assert _uses_remote_resume_picker(args) is True
 
 
 def test_codex_resume_explicit_session_is_forwarded_through_remote_daemon(monkeypatch):

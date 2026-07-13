@@ -69,16 +69,71 @@ REMOTE_RESUME_PICKER_MESSAGE = (
     "Use resume --last or an explicit session ID; the remote session picker "
     "is unsupported; use --no-lark."
 )
+_CODEX_GLOBAL_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "-a",
+        "--ask-for-approval",
+    }
+)
+_CODEX_GLOBAL_FLAG_OPTIONS = frozenset(
+    {
+        "--oss",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--search",
+        "--no-alt-screen",
+        "--strict-config",
+    }
+)
 
 
 def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
     """Return whether resume would require the unsupported remote picker."""
 
-    if not args or args[0] != "resume":
-        return False
-    if "--last" in args[1:]:
-        return False
-    return len(args) == 1 or args[1].startswith("-")
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return False
+        if token in _CODEX_GLOBAL_FLAG_OPTIONS:
+            index += 1
+            continue
+
+        option, separator, _ = token.partition("=")
+        if separator and option in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 1
+            continue
+        if token in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(args):
+                return False
+            index += 2
+            continue
+        if token.startswith("-") or token != "resume":
+            return False
+
+        resume_args = args[index:]
+        if "--last" in resume_args[1:]:
+            return False
+        return len(resume_args) == 1 or resume_args[1].startswith("-")
+    return False
 
 
 def configure_logging(level: str) -> None:
