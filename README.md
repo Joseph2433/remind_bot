@@ -120,6 +120,15 @@ lark-bot codex "Inspect this repository"
 lark-bot codex --model MODEL --sandbox workspace-write
 ```
 
+Resume a managed Codex session through the Lark gateway with an explicit target:
+
+```bash
+lark-bot codex resume --last
+lark-bot codex resume SESSION_ID
+```
+
+With Codex CLI 0.144.1, a secondary picker client can initialize, list, and resume sessions, but after it closes the primary remote TUI is not reliably usable. Therefore, bare `lark-bot codex resume` and the in-TUI `/resume` picker are unsupported through the Lark gateway. Exit the TUI, then use `--last` or an explicit session ID. For the native picker instead, use `lark-bot codex --no-lark resume`; it provides no Lark assistance or gateway.
+
 The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
 All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
