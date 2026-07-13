@@ -1,5 +1,5 @@
-from lack_bot.detector import detect_output
-from lack_bot.models import TaskStatus
+from lark_bot.detector import detect_output
+from lark_bot.models import TaskStatus
 
 
 def test_detects_waiting_for_manual_approval_case_insensitively():
@@ -25,3 +25,17 @@ def test_detects_success_without_intervention_text():
 
     assert result.status is TaskStatus.SUCCEEDED
     assert result.tags == ["succeeded"]
+
+
+def test_does_not_treat_permission_denied_as_waiting_for_input():
+    result = detect_output("Error: permission denied", exit_code=1)
+
+    assert result.status is TaskStatus.FAILED
+    assert result.tags == ["failed"]
+
+
+def test_detects_permission_required_prompt():
+    result = detect_output("permission required to continue", exit_code=0)
+
+    assert result.status is TaskStatus.WAITING_FOR_INPUT
+    assert "permission" in result.tags

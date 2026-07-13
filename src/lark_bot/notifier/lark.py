@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
-from lack_bot.models import NotificationRequest, ReceiveIdType
-from lack_bot.redaction import redact_text
+from lark_bot.models import NotificationRequest, ReceiveIdType
+from lark_bot.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +57,11 @@ class LarkBotClient:
         if self._owns_client:
             self._client.close()
 
-    def send(self, request: NotificationRequest) -> None:
+    def send(self, request: NotificationRequest) -> str:
         text = self.render_notification_text(request)
-        self.send_text(text)
+        return self.send_text(text)
 
-    def send_text(self, text: str) -> None:
+    def send_text(self, text: str) -> str:
         token = self.get_tenant_access_token()
         url = f"{self.base_url}/open-apis/im/v1/messages"
         payload = build_text_message(self.receive_id, text)
@@ -86,6 +86,11 @@ class LarkBotClient:
                 data.get("msg"),
             )
             raise LarkAPIError("Lark message API failed")
+        response_data = data.get("data")
+        message_id = response_data.get("message_id") if isinstance(response_data, dict) else None
+        if not isinstance(message_id, str) or not message_id:
+            raise LarkAPIError("Lark message API response missing message_id")
+        return message_id
 
     def get_tenant_access_token(self) -> str:
         now = time.time()
@@ -126,7 +131,7 @@ class LarkBotClient:
         task = request.task
         detection = request.detection
         lines = [
-            f"Lack Bot: {detection.status.value}",
+            f"Lark Bot: {detection.status.value}",
             f"Task: {task.name}",
             f"Source: {task.source}",
             f"Exit code: {task.exit_code}",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from lack_bot.models import NotificationRequest
+from lark_bot.models import NotificationRequest
 
 
 class Notifier(Protocol):

@@ -5,8 +5,8 @@ from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from lack_bot.detector import detect_output
-from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.detector import dedupe_tags, detect_output
+from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 
 router = APIRouter()
 
@@ -62,20 +62,10 @@ def _event_detection(event: AgentEvent, task: TaskResult) -> DetectionResult:
         tags = [*event.tags, *detected.tags]
         return DetectionResult(
             status=TaskStatus.WAITING_FOR_INPUT,
-            tags=_dedupe(tags),
+            tags=dedupe_tags(tags),
             matched_phrases=detected.matched_phrases,
         )
 
     status = TaskStatus(event.status)
     tags = event.tags or [status.value]
-    return DetectionResult(status=status, tags=_dedupe(tags))
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
+    return DetectionResult(status=status, tags=dedupe_tags(tags))

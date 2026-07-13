@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import re
 
-from lack_bot.models import DetectionResult, TaskStatus
+from lark_bot.models import DetectionResult, TaskStatus
 
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("approval", re.compile(r"\bapproval\b|do you want to allow", re.IGNORECASE)),
-    ("permission", re.compile(r"\bpermission\b", re.IGNORECASE)),
+    # Avoid matching ordinary failures like "permission denied".
+    (
+        "permission",
+        re.compile(
+            r"\bpermission required\b|\bneeds? permission\b|\brequesting permission\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("waiting_for_input", re.compile(r"waiting for input|need user input", re.IGNORECASE)),
 ]
 
@@ -31,3 +38,13 @@ def detect_output(output: str, exit_code: int) -> DetectionResult:
     if exit_code == 0:
         return DetectionResult(status=TaskStatus.SUCCEEDED, tags=["succeeded"])
     return DetectionResult(status=TaskStatus.FAILED, tags=["failed"])
+
+
+def dedupe_tags(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result

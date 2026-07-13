@@ -1,7 +1,10 @@
 import json
 
-from lack_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
-from lack_bot.notifier.lark import LarkBotClient, build_text_message
+import httpx
+import pytest
+
+from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.notifier.lark import LarkAPIError, LarkBotClient, build_text_message
 
 
 def test_build_text_message_uses_receive_id_and_json_content():
@@ -34,3 +37,21 @@ def test_notification_text_contains_summary_without_secret():
     assert "waiting_for_input" in text
     assert "abc123" not in text
     assert "[REDACTED]" in text
+
+
+@pytest.mark.parametrize("payload, expected_error", [
+    ({"code": 0, "data": {"message_id": "om_1"}}, None),
+    ({"code": 0, "data": {}}, LarkAPIError),
+])
+def test_send_text_returns_required_message_id(payload, expected_error):
+    def handler(request):
+        if "tenant_access_token" in str(request.url):
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "token", "expire": 7200})
+        return httpx.Response(200, json=payload)
+
+    client = LarkBotClient("id", "secret", "chat", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    if expected_error:
+        with pytest.raises(expected_error):
+            client.send_text("hello")
+    else:
+        assert client.send_text("hello") == "om_1"
