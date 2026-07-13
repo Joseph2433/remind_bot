@@ -158,6 +158,11 @@ def test_create_session_persists_state_without_prompt_and_emits_started():
         assert app.thread_calls == [("C:/workspace", "gpt", "read-only")]
         assert app.turn_calls == [("thread-1", "secret prompt")]
         persisted = store.get_session("session-1")
+        assert store.list_due_outbox(now=NOW + timedelta(seconds=4), limit=10) == []
+        delayed = store.list_due_outbox(now=NOW + timedelta(seconds=5), limit=10)
+        assert len(delayed) == 1
+        assert delayed[0].created_at == NOW
+        assert delayed[0].next_attempt_at == NOW + timedelta(seconds=5)
         assert "secret prompt" not in persisted.model_dump_json()
         event = orchestrator.events.get_nowait()
         assert event.event_type is OrchestratorEventType.SESSION_STARTED
@@ -586,7 +591,8 @@ def test_startup_reconciliation_never_blocks_when_hint_queue_is_full():
             store.create_session(CodexSession(id=session_id, name="old", cwd="C:/old", sandbox="workspace-write", status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW))
         orchestrator = CodexOrchestrator(store, app, now=Clock(), id_factory=IdFactory(), event_queue_capacity=1)
         await asyncio.wait_for(orchestrator.start(), timeout=1)
-        assert len(store.list_due_outbox(now=NOW, limit=10)) == 2
+        assert store.list_due_outbox(now=NOW, limit=10) == []
+        assert len(store.list_due_outbox(now=NOW + timedelta(seconds=5), limit=10)) == 2
         await orchestrator.close()
 
     run(scenario())

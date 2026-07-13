@@ -41,3 +41,13 @@ def test_daemon_settings_have_safe_defaults():
     assert settings.interaction_timeout_seconds == 1800
     assert settings.interaction_expiry_poll_seconds == 1.0
     assert settings.outbox_poll_seconds == 0.5
+    assert settings.notification_delay_seconds == 5.0
+
+
+def test_notification_delay_can_be_loaded_from_environment(monkeypatch):
+    monkeypatch.setenv("LARK_BOT_NOTIFICATION_DELAY_SECONDS", "2.5")
+
+    settings = Settings()
+
+    assert settings.notification_delay_seconds == 2.5
+    assert public_settings_summary(settings)["notification_delay_seconds"] == 2.5

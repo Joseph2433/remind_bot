@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -75,9 +76,10 @@ def _public_session(session: CodexSession) -> dict[str, Any]:
 
 
 class DaemonRuntime:
-    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any) -> None:
+    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any, *, now: Callable[[], datetime] | None = None) -> None:
         self.settings, self.store, self.orchestrator = settings, store, orchestrator
         self.lark_client, self.long_connection, self.control_router = lark_client, long_connection, control_router
+        self._now = now or (lambda: datetime.now(timezone.utc))
         self._tasks: list[asyncio.Task[None]] = []
         self._closed = False
         self.degraded_reason: str | None = None
@@ -131,7 +133,7 @@ class DaemonRuntime:
                 if isinstance(event_id, str) and event_id and not self.store.record_event_once(f"hook:{event_id}"):
                     path.unlink()
                     continue
-                self.store.enqueue_outbox(notification_type=f"hook:{name}", payload_summary=f"Codex hook {name}")
+                self.enqueue_notification(notification_type=f"hook:{name}", payload_summary=f"Codex hook {name}")
                 path.unlink()
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
@@ -139,7 +141,7 @@ class DaemonRuntime:
     async def _outbox_worker(self) -> None:
         poll = float(self.settings.outbox_poll_seconds)
         while True:
-            for item in self.store.list_due_outbox(now=datetime.now(timezone.utc), limit=50):
+            for item in self.store.list_due_outbox(now=self._utc_now(), limit=50):
                 try:
                     message_id = await asyncio.to_thread(self.lark_client.send_text, self._render(item))
                     if item.interaction_id:
@@ -149,7 +151,7 @@ class DaemonRuntime:
                     raise
                 except BaseException as error:
                     delay = min(300.0, poll * (2 ** min(item.attempt_count + 1, 10)))
-                    self.store.record_outbox_failure(item.id, error=f"send failed ({type(error).__name__})", next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=delay))
+                    self.store.record_outbox_failure(item.id, error=f"send failed ({type(error).__name__})", next_attempt_at=self._utc_now() + timedelta(seconds=delay))
             try:
                 await asyncio.wait_for(self.orchestrator.events.get(), timeout=poll)
             except TimeoutError:
@@ -167,12 +169,27 @@ class DaemonRuntime:
                 safe_error = f"Interaction expiry unavailable ({type(error).__name__})"
                 self.degraded_reason = safe_error
                 if reported_error != safe_error:
-                    self.store.enqueue_outbox(
+                    self.enqueue_notification(
                         notification_type="runtime:degraded",
                         payload_summary=safe_error,
                     )
                     reported_error = safe_error
             await asyncio.sleep(poll)
+
+    def enqueue_notification(self, **kwargs: Any) -> int:
+        created_at = self._utc_now()
+        delay = float(self.settings.notification_delay_seconds)
+        return self.store.enqueue_outbox(
+            **kwargs,
+            created_at=created_at,
+            next_attempt_at=created_at + timedelta(seconds=delay),
+        )
+
+    def _utc_now(self) -> datetime:
+        value = self._now()
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def _render(self, item: Any) -> str:
         summary = redact_text(str(item.payload_summary))[:500]
@@ -256,7 +273,7 @@ def create_daemon_app(runtime: DaemonRuntime, *, token: str) -> FastAPI:
         event_id = payload.get("event_id")
         if isinstance(event_id, str) and event_id and not runtime.store.record_event_once(f"hook:{event_id}"):
             return {"accepted": True, "duplicate": True}
-        runtime.store.enqueue_outbox(notification_type=f"hook:{name}", payload_summary=f"Codex hook {name}")
+        runtime.enqueue_notification(notification_type=f"hook:{name}", payload_summary=f"Codex hook {name}")
         return {"accepted": True}
     return app
 
@@ -264,7 +281,7 @@ def create_daemon_app(runtime: DaemonRuntime, *, token: str) -> FastAPI:
 def build_runtime(settings: Any) -> DaemonRuntime:
     store = SQLiteCodexStore(settings.sqlite_path)
     app_server = CodexAppServerClient(codex_path=settings.codex_path)
-    orchestrator = CodexOrchestrator(store, app_server, now=lambda: datetime.now(timezone.utc), id_factory=lambda: str(uuid.uuid4()), interaction_timeout_seconds=settings.interaction_timeout_seconds)
+    orchestrator = CodexOrchestrator(store, app_server, now=lambda: datetime.now(timezone.utc), id_factory=lambda: str(uuid.uuid4()), interaction_timeout_seconds=settings.interaction_timeout_seconds, notification_delay_seconds=settings.notification_delay_seconds)
     lark = LarkBotClient(app_id=settings.lark_app_id, app_secret=settings.lark_app_secret, receive_id=settings.lark_receive_id, receive_id_type=settings.lark_receive_id_type, base_url=settings.lark_base_url, timeout_seconds=settings.http_timeout_seconds)
     connection = LarkLongConnection(settings.lark_app_id, settings.lark_app_secret, queue_capacity=settings.lark_event_queue_capacity)
     return DaemonRuntime(settings, store, orchestrator, lark, connection, LarkControlRouter(store, orchestrator))

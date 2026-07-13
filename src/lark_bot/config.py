@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     interaction_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     interaction_expiry_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     outbox_poll_seconds: float = Field(default=0.5, gt=0, le=60)
+    notification_delay_seconds: float = Field(default=5.0, ge=0, le=300)
     lark_event_queue_capacity: int = Field(default=100, ge=1, le=10000)
 
 
@@ -92,6 +93,7 @@ def public_settings_summary(settings: Settings) -> dict[str, str | int | float]:
         "interaction_timeout_seconds": settings.interaction_timeout_seconds,
         "interaction_expiry_poll_seconds": settings.interaction_expiry_poll_seconds,
         "outbox_poll_seconds": settings.outbox_poll_seconds,
+        "notification_delay_seconds": settings.notification_delay_seconds,
         "lark_event_queue_capacity": settings.lark_event_queue_capacity,
     }
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,12 +11,16 @@ from lark_bot.codex_models import CodexSession, NotificationOutboxItem, SessionS
 from lark_bot.daemon import DaemonRuntime, create_daemon_app, ensure_daemon_token
 
 
+NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.sessions = {}
         self.items = []
         self.attached = []
         self.sent = []
+        self.failures = []
         self.closed = False
         self.events = set()
 
@@ -26,11 +30,13 @@ class FakeStore:
         if event_id in self.events: return False
         self.events.add(event_id); return True
     def enqueue_outbox(self, **kwargs):
-        self.items.append(NotificationOutboxItem(id=len(self.items)+1, attempt_count=0, next_attempt_at=datetime.now(timezone.utc), created_at=datetime.now(timezone.utc), **kwargs)); return len(self.items)
-    def list_due_outbox(self, **kwargs): return [item for item in self.items if item.id not in self.sent]
+        created_at = kwargs.pop("created_at", datetime.now(timezone.utc))
+        next_attempt_at = kwargs.pop("next_attempt_at", created_at)
+        self.items.append(NotificationOutboxItem(id=len(self.items)+1, attempt_count=0, next_attempt_at=next_attempt_at, created_at=created_at, **kwargs)); return len(self.items)
+    def list_due_outbox(self, *, now, **kwargs): return [item for item in self.items if item.next_attempt_at <= now and item.id not in self.sent and item.id not in {failure[0] for failure in self.failures}]
     def attach_lark_message_id(self, interaction_id, message_id): self.attached.append((interaction_id, message_id)); return True
     def mark_outbox_sent(self, outbox_id, **kwargs): self.sent.append(outbox_id); return True
-    def record_outbox_failure(self, *args, **kwargs): return True
+    def record_outbox_failure(self, outbox_id, **kwargs): self.failures.append((outbox_id, kwargs)); return True
     def close(self): self.closed = True
 
 
@@ -68,9 +74,10 @@ def _runtime(tmp_path: Path):
     settings = SimpleNamespace(
         outbox_poll_seconds=0.01,
         interaction_expiry_poll_seconds=0.01,
+        notification_delay_seconds=5.0,
         daemon_token_path=tmp_path / "token",
     )
-    runtime = DaemonRuntime(settings, store, orchestrator, lark, connection, SimpleNamespace(route=lambda event: None))
+    runtime = DaemonRuntime(settings, store, orchestrator, lark, connection, SimpleNamespace(route=lambda event: None), now=lambda: NOW)
     return runtime, store, orchestrator, connection, lark
 
 
@@ -90,13 +97,31 @@ def test_api_requires_bearer_and_excludes_prompt(workspace_tmp_path):
 
 
 def test_hook_endpoint_bounds_and_deduplicates(workspace_tmp_path):
-    runtime, store, *_ = _runtime(workspace_tmp_path); headers = {"Authorization": "Bearer secret"}
+    runtime, store, _, _, lark = _runtime(workspace_tmp_path); headers = {"Authorization": "Bearer secret"}
     with TestClient(create_daemon_app(runtime, token="secret")) as client:
         payload = {"hook_event_name": "Stop", "event_id": "e1", "output": "secret output"}
         assert client.post("/api/v1/codex/hooks", headers=headers, json=payload).status_code == 202
         assert client.post("/api/v1/codex/hooks", headers=headers, json=payload).status_code == 202
         assert len(store.items) == 1 and "secret output" not in store.items[0].payload_summary
+        assert store.items[0].created_at == NOW
+        assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
+        assert lark.messages == []
         assert client.post("/api/v1/codex/hooks", headers=headers, content=b"x" * 65537).status_code == 413
+
+
+def test_spool_hook_uses_notification_delay(workspace_tmp_path):
+    runtime, store, *_ = _runtime(workspace_tmp_path)
+    spool = workspace_tmp_path / "spool"
+    spool.mkdir()
+    (spool / "hook-1.json").write_text(
+        '{"hook_event_name":"Stop","event_id":"spool-1"}',
+        encoding="utf-8",
+    )
+
+    runtime._drain_spool()
+
+    assert store.items[0].created_at == NOW
+    assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
 
 
 def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
@@ -146,8 +171,41 @@ def test_runtime_retries_expiry_after_safe_degradation(workspace_tmp_path):
         assert any(
             item.notification_type == "runtime:degraded"
             and item.payload_summary == "Interaction expiry unavailable (RuntimeError)"
+            and item.next_attempt_at == NOW + timedelta(seconds=5)
             for item in store.items
         )
         await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_outbox_retry_is_scheduled_from_failure_time(workspace_tmp_path):
+    async def scenario():
+        runtime, store, _, _, lark = _runtime(workspace_tmp_path)
+        store.enqueue_outbox(
+            notification_type="hook:Stop",
+            payload_summary="Codex hook Stop",
+            created_at=NOW - timedelta(minutes=1),
+            next_attempt_at=NOW,
+        )
+
+        def fail(_text):
+            raise RuntimeError("network detail")
+
+        lark.send_text = fail
+        worker = asyncio.create_task(runtime._outbox_worker())
+        await asyncio.sleep(0.03)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+        assert store.failures == [
+            (
+                1,
+                {
+                    "error": "send failed (RuntimeError)",
+                    "next_attempt_at": NOW + timedelta(seconds=0.02),
+                },
+            )
+        ]
 
     asyncio.run(scenario())

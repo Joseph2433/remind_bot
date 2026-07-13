@@ -76,12 +76,16 @@ class CodexOrchestrator:
         id_factory: Callable[[], str],
         interaction_timeout_seconds: int = 1800,
         event_queue_capacity: int = 100,
+        notification_delay_seconds: float = 5.0,
     ) -> None:
         if interaction_timeout_seconds <= 0:
             raise ValueError("interaction timeout must be positive")
         if event_queue_capacity <= 0:
             raise ValueError("event queue capacity must be positive")
+        if notification_delay_seconds < 0:
+            raise ValueError("notification delay must not be negative")
         self._store = store
+        self._notification_delay_seconds = float(notification_delay_seconds)
         self._app_server = app_server
         self._now = now
         self._id_factory = id_factory
@@ -592,7 +596,15 @@ class CodexOrchestrator:
                 status=status,
                 summary=_safe_summary(summary),
             )
-        self._store.enqueue_outbox(notification_type=f"orchestrator:{event_type.value}", payload_summary=event.summary, session_id=session_id, interaction_id=interaction_id, created_at=self._utc_now())
+        created_at = self._utc_now()
+        self._store.enqueue_outbox(
+            notification_type=f"orchestrator:{event_type.value}",
+            payload_summary=event.summary,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            created_at=created_at,
+            next_attempt_at=created_at + timedelta(seconds=self._notification_delay_seconds),
+        )
         try:
             self.events.put_nowait(event)
         except asyncio.QueueFull:
