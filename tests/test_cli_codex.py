@@ -124,6 +124,10 @@ def test_codex_resume_is_forwarded_to_native_tui(monkeypatch):
 def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
     calls = []
     monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
         "lark_bot.cli._daemon_request",
         lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
     )
@@ -135,6 +139,7 @@ def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
     result = CliRunner().invoke(app, ["codex", "resume"])
 
     assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
     assert "resume --last" in result.output
     assert "explicit session ID" in result.output
     assert "--no-lark" in result.output
@@ -152,6 +157,10 @@ def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
 def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, picker_args):
     calls = []
     monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
         "lark_bot.cli._daemon_request",
         lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
     )
@@ -163,6 +172,7 @@ def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, pic
     result = CliRunner().invoke(app, ["codex", *picker_args])
 
     assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
     assert "resume --last" in result.output
     assert "explicit session ID" in result.output
     assert "--no-lark" in result.output
