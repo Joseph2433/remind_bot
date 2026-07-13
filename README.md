@@ -16,9 +16,10 @@ The original MVP follows the same practical shape as `ntfy done`: wrap a command
 - Suppress duplicate notifications within a configurable cooldown using SQLite.
 - Diagnose local configuration with `lark-bot config`.
 - Provide FastAPI health, Lark challenge, and structured agent event endpoints.
-- Run managed Codex sessions through a local authenticated daemon.
+- Launch the native interactive Codex TUI through a local authenticated companion gateway.
+- Keep unattended Codex jobs available under an explicit `codex job` namespace.
 - Approve or deny Codex requests with Lark reactions and answer questions by replying to the notification.
-- Install project-level Codex hooks for one-way notifications from ordinary Codex sessions.
+- Install auditable Codex notify fragments for one-way fallback notifications.
 
 ## Lark/Feishu App Setup
 
@@ -56,6 +57,7 @@ LARK_BOT_CODEX_PATH=codex
 LARK_BOT_INTERACTION_TIMEOUT_SECONDS=1800
 LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
 LARK_BOT_OUTBOX_POLL_SECONDS=0.5
+LARK_BOT_NOTIFICATION_DELAY_SECONDS=5.0
 LARK_BOT_LARK_EVENT_QUEUE_CAPACITY=100
 ```
 
@@ -110,18 +112,34 @@ Start the local daemon. It binds to loopback by default and creates a private be
 lark-bot daemon
 ```
 
-Start and inspect managed tasks from another terminal:
+From another real terminal, launch the native Codex TUI with Lark assistance:
 
 ```bash
-lark-bot codex start --name "implement feature" --cwd . "Implement the requested feature"
-lark-bot codex list
-lark-bot codex show SESSION_ID
-lark-bot codex cancel SESSION_ID
+lark-bot codex
+lark-bot codex "Inspect this repository"
+lark-bot codex --model MODEL --sandbox workspace-write
 ```
 
-Use `-` as the prompt to read it from stdin. Managed sessions always use `approvalPolicy=on-request`; supported sandboxes are `read-only` and `workspace-write`.
+The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
-When Codex needs approval, react to the exact Bot notification with 👍 to allow or 👎 to deny. For `request_user_input`, reply to the exact notification; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. React 👍 or 👎 to the exact approval message. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+
+If the daemon is intentionally unavailable, launch Codex without any Lark callback or gateway:
+
+```bash
+lark-bot codex --no-lark
+```
+
+Start and inspect unattended background jobs separately:
+
+```bash
+lark-bot codex job start --name "implement feature" --cwd . "Implement the requested feature"
+lark-bot codex job list
+lark-bot codex job show SESSION_ID
+lark-bot codex job cancel SESSION_ID
+```
+
+Use `-` as an unattended-job prompt to read it from stdin. Unattended jobs always use `approvalPolicy=on-request`; supported sandboxes are `read-only` and `workspace-write`.
 
 Install one-way hooks for ordinary Codex sessions:
 
@@ -131,7 +149,7 @@ lark-bot codex hooks check --project .
 lark-bot codex hooks uninstall --project .
 ```
 
-The installer merges `.codex/hooks.json` without replacing unrelated hooks. If the daemon is unavailable, `codex-hook` stores only a small sanitized event under `.lark-bot/spool/` for later delivery.
+The installer writes an auditable notify fragment without replacing `config.toml`. The normal `lark-bot codex` launcher injects the equivalent callback safely and chains an existing top-level Codex `notify` command. If the daemon is unavailable, `codex-hook` stores only a small sanitized event under `.lark-bot/spool/` for later delivery.
 
 Wrap a successful command:
 
