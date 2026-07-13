@@ -376,6 +376,10 @@ def test_rejects_second_terminal_client() -> None:
                             await second.recv()
                         assert closed.value.rcvd is not None
                         assert closed.value.rcvd.code == 1008
+                        assert closed.value.rcvd.reason == (
+                            "session picker unsupported; use resume --last, "
+                            "an explicit session ID, or --no-lark"
+                        )
             finally:
                 await gateway.close()
 
