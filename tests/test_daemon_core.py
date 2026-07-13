@@ -192,6 +192,26 @@ def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
     asyncio.run(scenario())
 
 
+def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp_path):
+    runtime, _, _, _, _ = _runtime(workspace_tmp_path)
+
+    completed = runtime._render(
+        SimpleNamespace(
+            notification_type="orchestrator:turn_completed",
+            payload_summary="done",
+        )
+    )
+    interrupted = runtime._render(
+        SimpleNamespace(
+            notification_type="orchestrator:turn_interrupted",
+            payload_summary="stopped",
+        )
+    )
+
+    assert completed == "Codex 本轮已完成\ndone"
+    assert interrupted == "Codex 本轮已中断\nstopped"
+
+
 def test_runtime_runs_one_expiry_loop_and_collects_it_on_close(workspace_tmp_path):
     async def scenario():
         runtime, store, orchestrator, _, _ = _runtime(workspace_tmp_path)

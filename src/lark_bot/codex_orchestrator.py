@@ -49,6 +49,8 @@ class OrchestratorEventType(StrEnum):
     INTERACTION_RESOLVED = "interaction_resolved"
     SESSION_COMPLETED = "session_completed"
     SESSION_INTERRUPTED = "session_interrupted"
+    TURN_COMPLETED = "turn_completed"
+    TURN_INTERRUPTED = "turn_interrupted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,7 @@ class CodexOrchestrator:
         self._closed = False
         self._terminal_error: BaseException | None = None
         self._final_text: dict[tuple[str, str], tuple[str, bool]] = {}
+        self._interactive_sessions: set[str] = set()
 
     @property
     def terminal_error(self) -> BaseException | None:
@@ -222,6 +225,7 @@ class CodexOrchestrator:
             updated_at=timestamp,
         )
         self._store.create_session(session)
+        self._interactive_sessions.add(session.id)
         return session
 
     def bind_interactive_thread(
@@ -281,6 +285,19 @@ class CodexOrchestrator:
                 responder,
                 -32602,
                 "invalid or inactive threadId",
+            )
+            return None
+        request_turn_id = request.params.get("turnId")
+        if (
+            session.id in self._interactive_sessions
+            and isinstance(request_turn_id, str)
+            and request_turn_id != session.turn_id
+        ):
+            await self._respond_request_error(
+                request.request_id,
+                responder,
+                -32602,
+                "request belongs to an inactive turn",
             )
             return None
 
@@ -464,6 +481,27 @@ class CodexOrchestrator:
         remembered = self._final_text.pop((thread_id, turn_id), None) if isinstance(turn_id, str) else None
         if remembered is not None:
             summary = remembered[0]
+        if session.id in self._interactive_sessions:
+            if not isinstance(turn_id, str) or not turn_id:
+                return
+            affected = self._store.finish_interactive_turn(
+                session.id,
+                turn_id=turn_id,
+                summary=summary,
+                updated_at=self._utc_now(),
+            )
+            if affected is None:
+                return
+            self._drop_live_for_session(session.id)
+            event_type = (
+                OrchestratorEventType.TURN_INTERRUPTED
+                if status is SessionStatus.INTERRUPTED
+                else OrchestratorEventType.TURN_COMPLETED
+            )
+            await self._emit(
+                event_type, session.id, status=status, summary=summary
+            )
+            return
         affected = self._store.claim_session_terminal(session.id, status, summary=summary, pending_status=InteractionStatus.CANCELLED, updated_at=self._utc_now())
         if affected is None:
             return
@@ -552,6 +590,7 @@ class CodexOrchestrator:
 
     async def close_interactive_session(self, session_id: str) -> bool:
         """Finish an externally hosted TUI session without touching managed Codex."""
+        self._interactive_sessions.discard(session_id)
         session = self._store.get_session(session_id)
         if session is None or session.status not in _ACTIVE_STATUSES:
             return False

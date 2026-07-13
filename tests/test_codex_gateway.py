@@ -158,6 +158,66 @@ def test_terminal_winner_for_intercepted_server_request_is_forwarded_once(method
     asyncio.run(scenario())
 
 
+def test_server_request_callback_is_bound_to_active_turn() -> None:
+    async def scenario() -> None:
+        seen_requests: list[ServerRequest] = []
+
+        async def on_request(
+            request: ServerRequest,
+            respond: Callable[..., Awaitable[bool]],
+        ) -> None:
+            del respond
+            seen_requests.append(request)
+
+        async with FakeUpstream() as upstream:
+            gateway = CodexGateway(
+                upstream.endpoint,
+                on_server_request=on_request,
+                on_terminal_response=allow_terminal_response,
+                token="test-token",
+            )
+            await gateway.start()
+            upstream_socket = await upstream.client()
+            try:
+                async with connect(
+                    gateway.endpoint,
+                    additional_headers={"Authorization": "Bearer test-token"},
+                ) as terminal:
+                    started = {
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1"},
+                        },
+                    }
+                    await upstream_socket.send(json.dumps(started))
+                    assert json.loads(await asyncio.wait_for(terminal.recv(), 1)) == started
+
+                    request = {
+                        "jsonrpc": "2.0",
+                        "id": "approval-1",
+                        "method": "item/commandExecution/requestApproval",
+                        "params": {"threadId": "thread-1"},
+                    }
+                    await upstream_socket.send(json.dumps(request))
+                    assert json.loads(await asyncio.wait_for(terminal.recv(), 1)) == request
+                    await asyncio.wait_for(
+                        _wait_until(lambda: bool(seen_requests)), 1
+                    )
+                    assert seen_requests == [
+                        ServerRequest(
+                            "approval-1",
+                            "item/commandExecution/requestApproval",
+                            {"threadId": "thread-1", "turnId": "turn-1"},
+                        )
+                    ]
+            finally:
+                await gateway.close()
+
+    asyncio.run(scenario())
+
+
 def test_lark_winner_suppresses_late_terminal_response() -> None:
     async def scenario() -> None:
         async def on_request(request: ServerRequest, respond: Callable[..., Awaitable[bool]]) -> None:
@@ -225,11 +285,15 @@ def test_resolved_notification_is_forwarded_to_terminal() -> None:
 
 def test_slow_side_channel_callback_does_not_block_upstream_notifications() -> None:
     async def scenario() -> None:
+        callback_started = asyncio.Event()
         release_callback = asyncio.Event()
+        callback_completed = asyncio.Event()
 
         async def on_request(request: ServerRequest, respond: Callable[..., Awaitable[bool]]) -> None:
             del request, respond
+            callback_started.set()
             await release_callback.wait()
+            callback_completed.set()
 
         async with FakeUpstream() as upstream:
             gateway = CodexGateway(
@@ -254,9 +318,13 @@ def test_slow_side_channel_callback_does_not_block_upstream_notifications() -> N
                         "params": {"requestId": 12},
                     }
                     await upstream_socket.send(json.dumps(request))
-                    await upstream_socket.send(json.dumps(notification))
                     assert json.loads(await asyncio.wait_for(terminal.recv(), 1)) == request
+                    await asyncio.wait_for(callback_started.wait(), 1)
+                    await upstream_socket.send(json.dumps(notification))
                     assert json.loads(await asyncio.wait_for(terminal.recv(), 1)) == notification
+                    release_callback.set()
+                    await asyncio.sleep(0.05)
+                    assert not callback_completed.is_set()
             finally:
                 release_callback.set()
                 await gateway.close()

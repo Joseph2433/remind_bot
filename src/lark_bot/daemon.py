@@ -205,7 +205,18 @@ class DaemonRuntime:
 
     def _render(self, item: Any) -> str:
         summary = redact_text(str(item.payload_summary))[:500]
-        heading = str(item.notification_type).replace("orchestrator:", "Codex ").replace("_", " ")
+        headings = {
+            "orchestrator:session_completed": "Codex 会话已完成",
+            "orchestrator:session_interrupted": "Codex 会话已中断",
+            "orchestrator:turn_completed": "Codex 本轮已完成",
+            "orchestrator:turn_interrupted": "Codex 本轮已中断",
+        }
+        heading = headings.get(
+            str(item.notification_type),
+            str(item.notification_type)
+            .replace("orchestrator:", "Codex ")
+            .replace("_", " "),
+        )
         if item.notification_type.endswith("interaction_requested"):
             getter = getattr(self.store, "get_interaction", None)
             interaction = getter(item.interaction_id) if getter is not None and item.interaction_id else None
