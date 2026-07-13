@@ -137,7 +137,7 @@ def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
             return False
 
         resume_args = args[index:]
-        if "--last" in resume_args[1:]:
+        if any(token in {"--last", "--last=true"} for token in resume_args[1:]):
             return False
         return len(resume_args) == 1 or resume_args[1].startswith("-")
     return False
