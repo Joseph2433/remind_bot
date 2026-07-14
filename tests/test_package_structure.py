@@ -112,3 +112,11 @@ def test_daemon_separates_auth_runtime_and_routes() -> None:
     assert import_module("lark_bot.server.daemon.auth").ensure_daemon_token
     assert import_module("lark_bot.server.daemon.runtime").DaemonRuntime
     assert import_module("lark_bot.server.daemon.app").create_daemon_app
+
+
+def test_cli_is_a_thin_stable_composition_root() -> None:
+    cli = import_module("lark_bot.cli")
+    assert cli.app
+    assert import_module("lark_bot.commands.app").app is cli.app
+    assert import_module("lark_bot.commands.codex_args").uses_remote_resume_picker
+    assert import_module("lark_bot.commands.common").build_codex_notification_from_json
