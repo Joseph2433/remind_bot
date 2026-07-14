@@ -12,7 +12,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-from lark_bot.codex_app_server import ServerNotification, ServerRequest
+from lark_bot.codex.app_server import ServerNotification, ServerRequest
 
 
 JsonObject: TypeAlias = dict[str, Any]

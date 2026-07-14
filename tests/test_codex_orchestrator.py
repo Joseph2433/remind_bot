@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lark_bot.codex_app_server import ServerNotification, ServerRequest
+from lark_bot.codex.app_server import ServerNotification, ServerRequest
 from lark_bot.codex_models import InteractionKind, InteractionStatus, SessionStatus
 from lark_bot.codex_orchestrator import (
     CodexOrchestrator,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from lark_bot.codex_app_server import ServerNotification, ServerRequest
+from lark_bot.codex.app_server import ServerNotification, ServerRequest
 from lark_bot.codex_interactive import InteractiveSessionManager
 
 

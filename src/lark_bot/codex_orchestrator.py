@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
 
-from lark_bot.codex_app_server import (
+from lark_bot.codex.app_server import (
     ServerNotification,
     ServerRequest,
     command_approval_response,
