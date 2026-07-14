@@ -10,7 +10,7 @@ from lark_bot.codex_orchestrator import (
     CodexOrchestrator,
     OrchestratorEventType,
 )
-from lark_bot.storage.codex_sqlite import SQLiteCodexStore
+from lark_bot.storage.codex import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc)

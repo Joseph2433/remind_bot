@@ -77,3 +77,25 @@ def test_lark_modules_separate_client_routing_and_connection() -> None:
     assert import_module("lark_bot.lark.events").LarkMessageEvent
     assert import_module("lark_bot.lark.router").LarkControlRouter
     assert import_module("lark_bot.lark.connection").LarkLongConnection
+
+
+def test_codex_storage_package_exports_store_and_schema_tables() -> None:
+    module = import_module("lark_bot.storage.codex")
+    store_type = module.SQLiteCodexStore
+    assert store_type.__module__ == "lark_bot.storage.codex.store"
+
+    with store_type(":memory:") as store:
+        with store._connection() as connection:
+            tables = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+    assert tables >= {
+        "codex_sessions",
+        "codex_interactions",
+        "codex_event_dedupe",
+        "notification_outbox",
+        "codex_audit",
+    }

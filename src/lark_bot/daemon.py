@@ -23,7 +23,7 @@ from lark_bot.lark.client import LarkBotClient
 from lark_bot.lark.connection import LarkLongConnection
 from lark_bot.lark.router import LarkControlRouter
 from lark_bot.redaction import redact_text
-from lark_bot.storage.codex_sqlite import SQLiteCodexStore
+from lark_bot.storage.codex import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
 
