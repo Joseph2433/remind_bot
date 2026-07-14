@@ -41,6 +41,8 @@ def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> Non
         "ProtocolError",
         "ServerRpcError",
         "ProcessExitedError",
+        "ProcessFactory",
+        "_Lifecycle",
         "CodexAppServerClient",
         "_default_process_factory",
     ):
