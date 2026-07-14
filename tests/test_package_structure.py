@@ -18,7 +18,30 @@ def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> Non
     responses = import_module("lark_bot.codex.app_server.responses")
     client = import_module("lark_bot.codex.app_server.client")
 
-    assert hasattr(messages, "ServerRequest")
-    assert hasattr(messages, "ServerNotification")
-    assert callable(responses.user_input_response)
-    assert hasattr(client, "CodexAppServerClient")
+    for name in (
+        "ServerRequest",
+        "ServerNotification",
+        "_Reader",
+        "_Writer",
+        "_Process",
+    ):
+        assert hasattr(messages, name)
+
+    response_builders = (
+        "command_approval_response",
+        "file_approval_response",
+        "permission_response",
+        "user_input_response",
+    )
+    for name in response_builders:
+        assert callable(getattr(responses, name))
+        assert not hasattr(client, name)
+
+    for name in (
+        "ProtocolError",
+        "ServerRpcError",
+        "ProcessExitedError",
+        "CodexAppServerClient",
+        "_default_process_factory",
+    ):
+        assert hasattr(client, name)
