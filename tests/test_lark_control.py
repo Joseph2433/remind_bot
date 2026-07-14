@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from lark_bot.codex_models import InteractionKind
+from lark_bot.codex.models import InteractionKind
 from lark_bot.lark_control import (
     LarkControlRouter,
     LarkMessageEvent,

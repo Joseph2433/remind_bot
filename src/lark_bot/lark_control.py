@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, TypeAlias
 
-from lark_bot.codex_models import InteractionKind
+from lark_bot.codex.models import InteractionKind
 
 
 @dataclass(frozen=True, slots=True)

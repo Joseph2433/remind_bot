@@ -10,7 +10,7 @@ from typing import Any, Protocol, TypeVar
 
 from websockets.asyncio.client import connect
 
-from lark_bot.codex_interactive import _loopback_endpoint, _wait_for_listener
+from lark_bot.codex.interactive import _loopback_endpoint, _wait_for_listener
 
 
 _T = TypeVar("_T")

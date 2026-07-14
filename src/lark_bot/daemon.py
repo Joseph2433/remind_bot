@@ -16,8 +16,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
-from lark_bot.codex_interactive import InteractiveSessionManager
-from lark_bot.codex_models import CodexSession, InteractionKind, SessionStatus
+from lark_bot.codex.interactive import InteractiveSessionManager
+from lark_bot.codex.models import CodexSession, InteractionKind, SessionStatus
 from lark_bot.codex_orchestrator import CodexOrchestrator
 from lark_bot.lark_control import LarkControlRouter, LarkLongConnection
 from lark_bot.notifier.lark import LarkBotClient

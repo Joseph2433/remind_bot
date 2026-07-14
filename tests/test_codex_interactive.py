@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from lark_bot.codex.app_server import ServerNotification, ServerRequest
-from lark_bot.codex_interactive import InteractiveSessionManager
+from lark_bot.codex.interactive import InteractiveSessionManager
 
 
 class FakeProcess:

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Iterator, Self
 
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexAuditEntry,
     CodexSession,
     InteractionDecision,

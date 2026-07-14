@@ -16,7 +16,7 @@ from lark_bot.codex.app_server import (
     permission_response,
     user_input_response,
 )
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexSession,
     InteractionKind,
     InteractionStatus,

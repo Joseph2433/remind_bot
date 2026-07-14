@@ -47,3 +47,26 @@ def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> Non
         "_default_process_factory",
     ):
         assert hasattr(client, name)
+
+
+def test_codex_runtime_modules_live_under_codex_package() -> None:
+    modules = {
+        name: import_module(f"lark_bot.codex.{name}")
+        for name in (
+            "models",
+            "gateway",
+            "interactive",
+            "tui",
+            "hooks",
+            "hook_adapter",
+            "probe",
+        )
+    }
+
+    assert hasattr(modules["models"], "CodexSession")
+    assert hasattr(modules["gateway"], "CodexGateway")
+    assert hasattr(modules["interactive"], "InteractiveSessionManager")
+    assert hasattr(modules["tui"], "CodexTuiLauncher")
+    assert hasattr(modules["hooks"], "build_notify_override")
+    assert hasattr(modules["hook_adapter"], "handle_callback")
+    assert hasattr(modules["probe"], "run_local_probe")

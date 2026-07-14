@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexAuditEntry,
     CodexSession,
     InteractionDecision,

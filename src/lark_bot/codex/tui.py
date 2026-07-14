@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lark_bot.hooks import build_notify_override
+from lark_bot.codex.hooks import build_notify_override
 
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[object]]

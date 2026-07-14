@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexAuditEntry,
     CodexSession,
     InteractionKind,
