@@ -120,14 +120,29 @@ lark-bot codex "Inspect this repository"
 lark-bot codex --model MODEL --sandbox workspace-write
 ```
 
-Resume a managed Codex session through the Lark gateway with an explicit target:
+#### Resume support
+
+Resume is supported, but the remote session picker is not reliable with Codex CLI 0.144.1.
+
+These forms are supported:
 
 ```bash
+# Resume the most recent session through the Lark gateway.
 lark-bot codex resume --last
+
+# Resume a specific session through the Lark gateway.
 lark-bot codex resume SESSION_ID
+
+# Open the native Codex picker without Lark assistance or the gateway.
+lark-bot codex --no-lark resume
 ```
 
-With Codex CLI 0.144.1, a secondary picker client can initialize, list, and resume sessions, but after it closes the primary remote TUI is not reliably usable. Therefore, bare `lark-bot codex resume` and the in-TUI `/resume` picker are unsupported through the Lark gateway. Exit the TUI, then use `--last` or an explicit session ID. For the native picker instead, use `lark-bot codex --no-lark resume`; it provides no Lark assistance or gateway.
+These picker-dependent forms are currently unsupported through the Lark gateway:
+
+- bare `lark-bot codex resume`;
+- the in-TUI `/resume` command.
+
+The installed Codex app-server accepts a secondary picker client and lets it list and resume sessions. However, after that picker closes, the primary remote TUI is no longer reliably usable. This is an upstream remote-client lifecycle limitation rather than a failure of all resume functionality. Exit the managed TUI and use `--last` or an explicit session ID, or use `--no-lark` when the interactive picker is required.
 
 The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
