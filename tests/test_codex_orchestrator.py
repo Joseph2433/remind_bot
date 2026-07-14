@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lark_bot.codex_app_server import ServerNotification, ServerRequest
-from lark_bot.codex_models import InteractionKind, InteractionStatus, SessionStatus
-from lark_bot.codex_orchestrator import (
+from lark_bot.codex.app_server import ServerNotification, ServerRequest
+from lark_bot.codex.models import InteractionKind, InteractionStatus, SessionStatus
+from lark_bot.codex.orchestration import (
     CodexOrchestrator,
     OrchestratorEventType,
 )
-from lark_bot.storage.codex_sqlite import SQLiteCodexStore
+from lark_bot.storage.codex import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc)
@@ -215,6 +215,104 @@ def test_close_interactive_session_does_not_interrupt_managed_app_server():
         assert app.interrupt_calls == []
         event = orchestrator.events.get_nowait()
         assert event.event_type is OrchestratorEventType.SESSION_COMPLETED
+
+    run(scenario())
+
+
+def test_interactive_session_accepts_new_approval_after_interrupted_turn():
+    async def scenario():
+        orchestrator, store, app, _ = make_orchestrator(
+            "session-1", "interaction-1", "interaction-2"
+        )
+        session = await orchestrator.create_interactive_session(
+            "interactive", "C:/workspace"
+        )
+        assert orchestrator.bind_interactive_thread(
+            session.id, "external-thread", "turn-1"
+        )
+        first = await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-1",
+                "item/commandExecution/requestApproval",
+                {"threadId": "external-thread", "turnId": "turn-1"},
+            ),
+            session_id=session.id,
+        )
+        assert first is not None
+
+        await orchestrator.process_notification(
+            ServerNotification(
+                "turn/completed",
+                {
+                    "threadId": "external-thread",
+                    "turn": {"id": "turn-1", "status": "interrupted"},
+                },
+            )
+        )
+
+        finished = store.get_session(session.id)
+        assert finished.status is SessionStatus.RUNNING
+        assert finished.turn_id is None
+        events = []
+        while not orchestrator.events.empty():
+            events.append(orchestrator.events.get_nowait())
+        assert any(
+            event.event_type.value == "turn_interrupted" for event in events
+        )
+        assert (
+            store.get_interaction("interaction-1").status
+            is InteractionStatus.CANCELLED
+        )
+        await orchestrator.process_notification(
+            ServerNotification(
+                "turn/started",
+                {"threadId": "external-thread", "turn": {"id": "turn-2"}},
+            )
+        )
+        stale = await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-stale",
+                "item/commandExecution/requestApproval",
+                {"threadId": "external-thread", "turnId": "turn-1"},
+            ),
+            session_id=session.id,
+        )
+        assert stale is None
+        second = await orchestrator.process_server_request(
+            ServerRequest(
+                "rpc-2",
+                "item/commandExecution/requestApproval",
+                {"threadId": "external-thread", "turnId": "turn-2"},
+            ),
+            session_id=session.id,
+        )
+
+        assert second is not None
+        assert second.id == "interaction-2"
+        await orchestrator.process_notification(
+            ServerNotification(
+                "turn/completed",
+                {
+                    "threadId": "external-thread",
+                    "turn": {"id": "turn-1", "status": "interrupted"},
+                },
+            )
+        )
+        current = store.get_session(session.id)
+        assert current.status is SessionStatus.WAITING_FOR_APPROVAL
+        assert current.turn_id == "turn-2"
+        assert (
+            store.get_interaction("interaction-2").status
+            is InteractionStatus.PENDING
+        )
+        assert app.errors == [
+            (
+                "rpc-stale",
+                -32602,
+                "request belongs to an inactive turn",
+                None,
+            )
+        ]
 
     run(scenario())
 
@@ -832,7 +930,7 @@ def test_expired_user_input_is_marked_interrupted_even_if_interrupt_rpc_fails():
 def test_start_reconciles_before_consumers_and_is_idempotent():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator()
-        from lark_bot.codex_models import CodexSession
+        from lark_bot.codex.models import CodexSession
         store.create_session(CodexSession(
             id="old", name="old", cwd="C:/old", sandbox="workspace-write",
             status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW,
@@ -854,7 +952,7 @@ def test_startup_reconciliation_never_blocks_when_hint_queue_is_full():
     async def scenario():
         store = SQLiteCodexStore(":memory:")
         app = FakeAppServer()
-        from lark_bot.codex_models import CodexSession
+        from lark_bot.codex.models import CodexSession
         for session_id in ("old-1", "old-2"):
             store.create_session(CodexSession(id=session_id, name="old", cwd="C:/old", sandbox="workspace-write", status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW))
         orchestrator = CodexOrchestrator(store, app, now=Clock(), id_factory=IdFactory(), event_queue_capacity=1)

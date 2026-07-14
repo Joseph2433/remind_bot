@@ -1,6 +1,6 @@
 import pytest
 
-from lark_bot.adapters.codex import CodexEvent, codex_event_to_notification
+from lark_bot.notifications.adapters.codex import CodexEvent, codex_event_to_notification
 from lark_bot.models import TaskStatus
 
 

@@ -18,7 +18,7 @@ The original MVP follows the same practical shape as `ntfy done`: wrap a command
 - Provide FastAPI health, Lark challenge, and structured agent event endpoints.
 - Launch the native interactive Codex TUI through a local authenticated companion gateway.
 - Keep unattended Codex jobs available under an explicit `codex job` namespace.
-- Approve or deny Codex requests with Lark reactions and answer questions by replying to the notification.
+- Approve or deny Codex requests by replying `yes`/`y` or `no`/`n` to the notification, and answer questions by replying to the notification.
 - Install auditable Codex notify fragments for one-way fallback notifications.
 
 ## Lark/Feishu App Setup
@@ -31,7 +31,7 @@ The original MVP follows the same practical shape as `ntfy done`: wrap a command
    - Use `chat_id` for group/private chat targets such as `oc_xxx`.
    - Use `user_id` or `open_id` for direct user targets.
 6. Grant message permissions, including the relevant `im:message` and `im:message:send_as_bot` permissions for sending as the Bot.
-7. For daemon control, enable the `im.message.receive_v1` and `im.message.reaction.created_v1` events and the matching message/reaction read scopes. Group replies must mention the Bot.
+7. For daemon control, enable the `im.message.receive_v1` event and the matching message read scope. Group replies to user-input questions must mention the Bot.
 8. Publish or install the app to the tenant as required by your organization.
 
 Never commit `.env`, app secrets, tenant access tokens, webhook secrets, or copied production logs.
@@ -120,9 +120,33 @@ lark-bot codex "Inspect this repository"
 lark-bot codex --model MODEL --sandbox workspace-write
 ```
 
+#### Resume support
+
+Resume is supported, but the remote session picker is not reliable with Codex CLI 0.144.1.
+
+These forms are supported:
+
+```bash
+# Resume the most recent session through the Lark gateway.
+lark-bot codex resume --last
+
+# Resume a specific session through the Lark gateway.
+lark-bot codex resume SESSION_ID
+
+# Open the native Codex picker without Lark assistance or the gateway.
+lark-bot codex --no-lark resume
+```
+
+These picker-dependent forms are currently unsupported through the Lark gateway:
+
+- bare `lark-bot codex resume`;
+- the in-TUI `/resume` command.
+
+The installed Codex app-server accepts a secondary picker client and lets it list and resume sessions. However, after that picker closes, the primary remote TUI is no longer reliably usable. This is an upstream remote-client lifecycle limitation rather than a failure of all resume functionality. Exit the managed TUI and use `--last` or an explicit session ID, or use `--no-lark` when the interactive picker is required.
+
 The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
-All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. React 👍 or 👎 to the exact approval message. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
 
 If the daemon is intentionally unavailable, launch Codex without any Lark callback or gateway:
 
@@ -196,6 +220,21 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 ## Local Lark CLI Verification
 
 `lark-cli` is useful for validating that your app, tenant, permissions, and receive IDs are correct. It is not a Lark Bot runtime dependency. Use it separately to prove the same Bot can send a message before debugging Lark Bot configuration.
+
+## Development Structure
+
+Implementation modules are grouped by functional ownership under `src/lark_bot/`:
+
+- `commands/`: Typer command composition, Codex argument parsing, and shared CLI helpers.
+- `tasks/`: subprocess execution and output-status detection.
+- `notifications/`: notification interfaces and agent event adapters.
+- `lark/`: Lark OpenAPI client, inbound event normalization, reply routing, and long connection.
+- `codex/`: Codex domain models, app-server transport, gateway, TUI integration, hooks, probes, and orchestration.
+- `storage/codex/`: Codex SQLite store, versioned schema, and row mapping.
+- `server/daemon/`: authenticated daemon API, token handling, and runtime exports.
+- `server/`: public FastAPI event callback endpoints.
+
+The package root contains only executable entry points and genuinely shared contracts: `cli.py`, `config.py`, `models.py`, and `redaction.py`.
 
 ## Security Notes
 

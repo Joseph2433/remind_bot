@@ -1,4 +1,4 @@
-from lark_bot.detector import detect_output
+from lark_bot.tasks.detector import detect_output
 from lark_bot.models import TaskStatus
 
 

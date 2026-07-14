@@ -1,8 +1,9 @@
 import json
 
+import pytest
 from typer.testing import CliRunner
 
-from lark_bot.cli import app, build_codex_notification_from_json
+from lark_bot.cli import _uses_remote_resume_picker, app, build_codex_notification_from_json
 from lark_bot.models import TaskStatus
 
 
@@ -107,15 +108,166 @@ def test_bare_codex_without_arguments_launches_native_tui(monkeypatch):
     assert seen == [[]]
 
 
-def test_codex_resume_is_forwarded_to_native_tui(monkeypatch):
+@pytest.mark.parametrize("last_option", ["--last", "--last=true"])
+def test_codex_resume_is_forwarded_to_native_tui(monkeypatch, last_option):
     seen = []
     monkeypatch.setattr("lark_bot.cli._daemon_request", lambda method, path, **kwargs: {"session_id": "s1", "endpoint": "ws://127.0.0.1:1", "remote_auth_token": "t"} if method == "POST" else None)
-    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options.args) or 0)
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options) or 0)
 
-    result = CliRunner().invoke(app, ["codex", "resume", "--last"])
+    result = CliRunner().invoke(app, ["codex", "resume", last_option])
 
     assert result.exit_code == 0
-    assert seen == [["resume", "--last"]]
+    assert seen[0].args == ["resume", last_option]
+    assert seen[0].remote_endpoint == "ws://127.0.0.1:1"
+    assert seen[0].remote_auth_token == "t"
+
+
+def test_codex_resume_picker_requires_explicit_degradation(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli._daemon_request",
+        lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli.CodexTuiLauncher.run",
+        lambda self, options: calls.append(("launcher", options)) or 0,
+    )
+
+    result = CliRunner().invoke(app, ["codex", "resume"])
+
+    assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
+    assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
+    assert "--no-lark" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "picker_args",
+    [
+        ["resume", "--all"],
+        ["resume", "--include-non-interactive"],
+        ["resume", "--model", "gpt-test"],
+        ["resume", "--last=false"],
+        ["resume", "--last=maybe"],
+    ],
+)
+def test_codex_resume_picker_options_are_rejected_before_daemon(monkeypatch, picker_args):
+    calls = []
+    monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli._daemon_request",
+        lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli.CodexTuiLauncher.run",
+        lambda self, options: calls.append(("launcher", options)) or 0,
+    )
+
+    result = CliRunner().invoke(app, ["codex", *picker_args])
+
+    assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
+    assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
+    assert "--no-lark" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "picker_args",
+    [
+        ["--model", "gpt-test", "resume"],
+        ["-m", "gpt-test", "resume", "--all"],
+        ["-mgpt-test", "resume"],
+        ["-C.", "resume", "--all"],
+    ],
+)
+def test_codex_resume_picker_after_global_options_is_rejected_before_daemon(
+    monkeypatch, picker_args
+):
+    calls = []
+    monkeypatch.setattr(
+        "lark_bot.cli.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not be loaded")),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli._daemon_request",
+        lambda *args, **kwargs: calls.append(("daemon", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "lark_bot.cli.CodexTuiLauncher.run",
+        lambda self, options: calls.append(("launcher", options)) or 0,
+    )
+
+    result = CliRunner().invoke(app, ["codex", *picker_args])
+
+    assert result.exit_code == 2
+    assert "session picker" in result.output.lower()
+    assert "resume --last" in result.output
+    assert "explicit session ID" in result.output
+    assert "--no-lark" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--model", "gpt-test", "exec", "resume"],
+        ["--model", "gpt-test", "--", "resume"],
+    ],
+)
+def test_remote_resume_picker_scanner_stops_before_resume(args):
+    assert _uses_remote_resume_picker(args) is False
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--model=gpt-test", "resume"],
+        ["--oss", "resume"],
+        ["-cfeature=true", "resume"],
+        ["-iimage.png", "resume"],
+        ["-mgpt-test", "resume"],
+        ["-pdev", "resume"],
+        ["-sworkspace-write", "resume"],
+        ["-C.", "resume", "--all"],
+        ["-aon-request", "resume"],
+    ],
+)
+def test_remote_resume_picker_scanner_supports_global_option_forms(args):
+    assert _uses_remote_resume_picker(args) is True
+
+
+def test_codex_resume_explicit_session_is_forwarded_through_remote_daemon(monkeypatch):
+    seen = []
+    requests = []
+
+    def daemon_request(method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        if method == "POST":
+            return {"session_id": "s1", "endpoint": "ws://127.0.0.1:9000", "remote_auth_token": "token"}
+        return None
+
+    monkeypatch.setattr("lark_bot.cli._daemon_request", daemon_request)
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options) or 0)
+
+    result = CliRunner().invoke(app, ["codex", "resume", "session-name"])
+
+    assert result.exit_code == 0
+    assert seen[0].args == ["resume", "session-name"]
+    assert seen[0].remote_endpoint == "ws://127.0.0.1:9000"
+    assert seen[0].remote_auth_token == "token"
+    assert requests[0][0:2] == ("POST", "/interactive-sessions")
+    assert requests[-1][0:2] == ("DELETE", "/interactive-sessions/s1")
 
 
 def test_codex_no_lark_launches_directly_without_daemon(monkeypatch):
@@ -127,6 +279,22 @@ def test_codex_no_lark_launches_directly_without_daemon(monkeypatch):
 
     assert result.exit_code == 0
     assert seen[0].args == ["hello"]
+    assert seen[0].remote_endpoint is None
+    assert seen[0].callback_command == []
+
+
+def test_codex_no_lark_resume_launches_directly_without_daemon(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        "lark_bot.cli._daemon_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("daemon must not be called")),
+    )
+    monkeypatch.setattr("lark_bot.cli.CodexTuiLauncher.run", lambda self, options: seen.append(options) or 0)
+
+    result = CliRunner().invoke(app, ["codex", "--no-lark", "resume"])
+
+    assert result.exit_code == 0
+    assert seen[0].args == ["resume"]
     assert seen[0].remote_endpoint is None
     assert seen[0].callback_command == []
 

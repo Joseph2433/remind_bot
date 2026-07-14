@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from lark_bot.codex_app_server import ServerNotification, ServerRequest
-from lark_bot.codex_gateway import CodexGateway
+from lark_bot.codex.app_server import ServerNotification, ServerRequest
+from lark_bot.codex.gateway import CodexGateway
 
 
 @dataclass(frozen=True, slots=True)

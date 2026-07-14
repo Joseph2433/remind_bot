@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-import os
-import secrets
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -15,14 +13,15 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from lark_bot.codex_app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
-from lark_bot.codex_interactive import InteractiveSessionManager
-from lark_bot.codex_models import CodexSession, InteractionKind, SessionStatus
-from lark_bot.codex_orchestrator import CodexOrchestrator
-from lark_bot.lark_control import LarkControlRouter, LarkLongConnection
-from lark_bot.notifier.lark import LarkBotClient
+from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
+from lark_bot.codex.interactive import InteractiveSessionManager
+from lark_bot.codex.models import CodexSession, InteractionKind, SessionStatus
+from lark_bot.codex.orchestration import CodexOrchestrator
+from lark_bot.lark.client import LarkBotClient
+from lark_bot.lark.connection import LarkLongConnection
+from lark_bot.lark.router import LarkControlRouter
 from lark_bot.redaction import redact_text
-from lark_bot.storage.codex_sqlite import SQLiteCodexStore
+from lark_bot.storage.codex import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
 
@@ -37,30 +36,6 @@ async def _read_bounded_body(request: Request, limit: int) -> bytes:
         if len(body) > limit:
             raise HTTPException(status_code=413, detail="payload too large")
     return bytes(body)
-
-
-def ensure_daemon_token(path: str | Path) -> str:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink():
-        raise RuntimeError("daemon token file must not be a symlink")
-    try:
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(secrets.token_urlsafe(32))
-    try:
-        os.chmod(target, 0o600)
-        if os.name != "nt" and target.stat().st_mode & 0o077:
-            raise RuntimeError("daemon token file permissions are insecure")
-        token = target.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise RuntimeError("daemon token file is unreadable") from error
-    if len(token) < 32:
-        raise RuntimeError("daemon token file is empty or insecure")
-    return token
 
 
 class SessionCreate(BaseModel):
@@ -205,15 +180,32 @@ class DaemonRuntime:
 
     def _render(self, item: Any) -> str:
         summary = redact_text(str(item.payload_summary))[:500]
-        heading = str(item.notification_type).replace("orchestrator:", "Codex ").replace("_", " ")
-        text = f"{heading}\n{summary}"
+        headings = {
+            "orchestrator:session_completed": "Codex 会话已完成",
+            "orchestrator:session_interrupted": "Codex 会话已中断",
+            "orchestrator:turn_completed": "Codex 本轮已完成",
+            "orchestrator:turn_interrupted": "Codex 本轮已中断",
+        }
+        heading = headings.get(
+            str(item.notification_type),
+            str(item.notification_type)
+            .replace("orchestrator:", "Codex ")
+            .replace("_", " "),
+        )
         if item.notification_type.endswith("interaction_requested"):
             getter = getattr(self.store, "get_interaction", None)
             interaction = getter(item.interaction_id) if getter is not None and item.interaction_id else None
             if interaction is not None and interaction.kind is InteractionKind.USER_INPUT:
-                text += "\nReply to this message and @Bot. For multiple questions, use `1: answer` on separate lines."
+                heading = "Codex 请求输入"
+                instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
             else:
-                text += "\nReact 👍 to approve or 👎 to deny."
+                heading = "Codex 请求审批"
+                instruction = (
+                    "请长按本消息并选择“回复”：输入 yes 或 y 表示允许，"
+                    "输入 no 或 n 表示拒绝。"
+                )
+            return f"{heading}\n{summary}\n{instruction}"
+        text = f"{heading}\n{summary}"
         return text
 
     async def close(self) -> None:

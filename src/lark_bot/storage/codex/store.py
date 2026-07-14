@@ -7,7 +7,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Iterator, Self
 
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexAuditEntry,
     CodexSession,
     InteractionDecision,
@@ -18,12 +18,20 @@ from lark_bot.codex_models import (
     SessionStatus,
     StartupReconciliationResult,
 )
-from lark_bot.redaction import redact_text
+from lark_bot.storage.codex.mappers import (
+    audit_from_row as _audit_from_row,
+    interaction_from_row as _interaction_from_row,
+    interaction_values as _interaction_values,
+    outbox_from_row as _outbox_from_row,
+    safe_summary as _safe_summary,
+    serialize_datetime as _serialize_datetime,
+    serialize_optional_datetime as _serialize_optional_datetime,
+    session_from_row as _session_from_row,
+)
+from lark_bot.storage.codex.schema import initialize_schema
 
 
 _UNSET = object()
-_SUMMARY_LIMIT = 2000
-_SCHEMA_VERSION = 2
 _ACTIVE_SESSION_STATUSES = (
     SessionStatus.STARTING,
     SessionStatus.RUNNING,
@@ -547,6 +555,62 @@ class SQLiteCodexStore:
             )
         return interaction_ids
 
+    def finish_interactive_turn(
+        self,
+        session_id: str,
+        *,
+        turn_id: str,
+        summary: str,
+        updated_at: datetime,
+    ) -> list[str] | None:
+        if not turn_id:
+            raise ValueError("turn_id must be a non-empty string")
+        active_values = tuple(status.value for status in _ACTIVE_SESSION_STATUSES)
+        placeholders = ", ".join("?" for _ in active_values)
+        timestamp = _serialize_datetime(updated_at)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                f"""
+                UPDATE codex_sessions
+                SET status = ?, turn_id = NULL, summary = ?, updated_at = ?
+                WHERE id = ? AND turn_id = ? AND status IN ({placeholders})
+                """,
+                (
+                    SessionStatus.RUNNING.value,
+                    _safe_summary(summary),
+                    timestamp,
+                    session_id,
+                    turn_id,
+                    *active_values,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            interaction_ids = [
+                row["id"]
+                for row in connection.execute(
+                    """
+                    SELECT id FROM codex_interactions
+                    WHERE session_id = ? AND status = ? ORDER BY id
+                    """,
+                    (session_id, InteractionStatus.PENDING.value),
+                ).fetchall()
+            ]
+            connection.execute(
+                """
+                UPDATE codex_interactions SET status = ?, resolved_at = ?
+                WHERE session_id = ? AND status = ?
+                """,
+                (
+                    InteractionStatus.CANCELLED.value,
+                    timestamp,
+                    session_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+        return interaction_ids
+
     def expire_interaction(
         self,
         interaction_id: str,
@@ -843,24 +907,7 @@ class SQLiteCodexStore:
 
     def _init_schema(self) -> None:
         with self._connection() as connection:
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > _SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"unsupported Codex schema version {version}; "
-                    f"maximum is {_SCHEMA_VERSION}"
-                )
-            if version == _SCHEMA_VERSION:
-                return
-
-            connection.execute("PRAGMA foreign_keys = OFF")
-            connection.execute("BEGIN IMMEDIATE")
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            for target_version in range(version + 1, _SCHEMA_VERSION + 1):
-                for statement in _MIGRATIONS[target_version]:
-                    connection.execute(statement)
-                connection.execute(f"PRAGMA user_version = {target_version}")
-            connection.commit()
-            connection.execute("PRAGMA foreign_keys = ON")
+            initialize_schema(connection)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -905,215 +952,6 @@ class SQLiteCodexStore:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
-
-
-_MIGRATIONS: dict[int, tuple[str, ...]] = {
-    1: (
-        """
-                CREATE TABLE IF NOT EXISTS codex_sessions (
-                    id TEXT PRIMARY KEY,
-                    thread_id TEXT,
-                    turn_id TEXT,
-                    name TEXT NOT NULL,
-                    cwd TEXT NOT NULL,
-                    model TEXT,
-                    sandbox TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    summary TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-        """,
-        """
-                CREATE TABLE IF NOT EXISTS codex_interactions (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL REFERENCES codex_sessions(id),
-                    request_id TEXT NOT NULL UNIQUE,
-                    kind TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    lark_message_id TEXT,
-                    payload_summary TEXT NOT NULL DEFAULT '',
-                    requested_at TEXT NOT NULL,
-                    resolved_at TEXT,
-                    expires_at TEXT NOT NULL,
-                    actor_id TEXT,
-                    decision TEXT
-                )
-        """,
-        """
-                CREATE TABLE IF NOT EXISTS codex_event_dedupe (
-                    event_id TEXT PRIMARY KEY,
-                    received_at TEXT NOT NULL
-                )
-        """,
-        """
-                CREATE TABLE IF NOT EXISTS notification_outbox (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT REFERENCES codex_sessions(id),
-                    interaction_id TEXT REFERENCES codex_interactions(id),
-                    notification_type TEXT NOT NULL,
-                    payload_summary TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at TEXT NOT NULL,
-                    sent_at TEXT,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL
-                )
-        """,
-        """
-                CREATE TABLE IF NOT EXISTS codex_audit (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT REFERENCES codex_sessions(id),
-                    interaction_id TEXT REFERENCES codex_interactions(id),
-                    event_type TEXT NOT NULL,
-                    actor_id TEXT,
-                    detail_summary TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                )
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_codex_sessions_status "
-        "ON codex_sessions(status)",
-        "CREATE INDEX IF NOT EXISTS idx_codex_interactions_status "
-        "ON codex_interactions(status)",
-        "CREATE INDEX IF NOT EXISTS idx_notification_outbox_due "
-        "ON notification_outbox(sent_at, next_attempt_at)",
-        "CREATE INDEX IF NOT EXISTS idx_codex_audit_session_created "
-        "ON codex_audit(session_id, created_at, id)",
-    ),
-    2: (
-        """
-        CREATE TABLE codex_interactions_v2 (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL REFERENCES codex_sessions(id),
-            request_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            status TEXT NOT NULL,
-            lark_message_id TEXT,
-            payload_summary TEXT NOT NULL DEFAULT '',
-            requested_at TEXT NOT NULL,
-            resolved_at TEXT,
-            expires_at TEXT NOT NULL,
-            actor_id TEXT,
-            decision TEXT
-        )
-        """,
-        """
-        INSERT INTO codex_interactions_v2 (
-            id, session_id, request_id, kind, status, lark_message_id,
-            payload_summary, requested_at, resolved_at, expires_at, actor_id, decision
-        )
-        SELECT id, session_id, json_quote(request_id), kind, status, lark_message_id,
-               payload_summary, requested_at, resolved_at, expires_at, actor_id, decision
-        FROM codex_interactions
-        """,
-        "DROP TABLE codex_interactions",
-        "ALTER TABLE codex_interactions_v2 RENAME TO codex_interactions",
-        "CREATE INDEX idx_codex_interactions_status ON codex_interactions(status)",
-        "CREATE UNIQUE INDEX idx_codex_interactions_pending_request "
-        "ON codex_interactions(request_id) WHERE status = 'pending'",
-    ),
-}
-
-
-def _session_from_row(row: sqlite3.Row) -> CodexSession:
-    return CodexSession(
-        id=row["id"],
-        thread_id=row["thread_id"],
-        turn_id=row["turn_id"],
-        name=row["name"],
-        cwd=row["cwd"],
-        model=row["model"],
-        sandbox=row["sandbox"],
-        status=row["status"],
-        summary=row["summary"],
-        created_at=datetime.fromisoformat(row["created_at"]),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-    )
-
-
-def _interaction_from_row(row: sqlite3.Row) -> PendingInteraction:
-    return PendingInteraction(
-        id=row["id"],
-        session_id=row["session_id"],
-        request_id=row["request_id"],
-        kind=row["kind"],
-        status=row["status"],
-        lark_message_id=row["lark_message_id"],
-        payload_summary=row["payload_summary"],
-        requested_at=datetime.fromisoformat(row["requested_at"]),
-        resolved_at=(
-            datetime.fromisoformat(row["resolved_at"])
-            if row["resolved_at"] is not None
-            else None
-        ),
-        expires_at=datetime.fromisoformat(row["expires_at"]),
-        actor_id=row["actor_id"],
-        decision=row["decision"],
-    )
-
-
-def _outbox_from_row(row: sqlite3.Row) -> NotificationOutboxItem:
-    return NotificationOutboxItem(
-        id=row["id"],
-        session_id=row["session_id"],
-        interaction_id=row["interaction_id"],
-        notification_type=row["notification_type"],
-        payload_summary=row["payload_summary"],
-        attempt_count=row["attempt_count"],
-        next_attempt_at=datetime.fromisoformat(row["next_attempt_at"]),
-        sent_at=(
-            datetime.fromisoformat(row["sent_at"])
-            if row["sent_at"] is not None
-            else None
-        ),
-        last_error=row["last_error"],
-        created_at=datetime.fromisoformat(row["created_at"]),
-    )
-
-
-def _audit_from_row(row: sqlite3.Row) -> CodexAuditEntry:
-    return CodexAuditEntry(
-        id=row["id"],
-        session_id=row["session_id"],
-        interaction_id=row["interaction_id"],
-        event_type=row["event_type"],
-        actor_id=row["actor_id"],
-        detail_summary=row["detail_summary"],
-        created_at=datetime.fromisoformat(row["created_at"]),
-    )
-
-
-def _serialize_datetime(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    else:
-        value = value.astimezone(timezone.utc)
-    return value.isoformat()
-
-
-def _serialize_optional_datetime(value: datetime | None) -> str | None:
-    return _serialize_datetime(value) if value is not None else None
-
-
-def _safe_summary(value: str) -> str:
-    return redact_text(value)[:_SUMMARY_LIMIT]
-
-
-def _interaction_values(interaction: PendingInteraction) -> tuple[object, ...]:
-    return (
-        interaction.id,
-        interaction.session_id,
-        interaction.request_id,
-        interaction.kind.value,
-        interaction.status.value,
-        interaction.lark_message_id,
-        _safe_summary(interaction.payload_summary),
-        _serialize_datetime(interaction.requested_at),
-        _serialize_optional_datetime(interaction.resolved_at),
-        _serialize_datetime(interaction.expires_at),
-        interaction.actor_id,
-        interaction.decision.value if interaction.decision is not None else None,
-    )
 
 
 def _normalize_decision(
