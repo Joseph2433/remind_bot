@@ -14,16 +14,16 @@ import typer
 import uvicorn
 from typer.core import TyperGroup
 
-from lark_bot.adapters.codex import CodexEvent, codex_event_to_notification
+from lark_bot.notifications.adapters.codex import CodexEvent, codex_event_to_notification
 from lark_bot.config import Settings, build_config_checks, get_settings, public_settings_summary
 from lark_bot.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
 from lark_bot.codex_tui import CodexTuiLauncher, CodexTuiOptions
-from lark_bot.detector import detect_output
+from lark_bot.tasks.detector import detect_output
 from lark_bot.daemon import build_runtime, create_daemon_app, ensure_daemon_token
 from lark_bot.hooks import check_hooks, install_hooks, uninstall_hooks
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 from lark_bot.notifier.lark import LarkBotClient
-from lark_bot.runner import run_command
+from lark_bot.tasks.runner import run_command
 from lark_bot.storage.sqlite import SQLiteNotificationStore
 
 app = typer.Typer(help="Lark Bot: Lark/Feishu notifications for code agent tasks.")

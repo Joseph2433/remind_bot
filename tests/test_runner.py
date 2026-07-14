@@ -1,6 +1,6 @@
 import sys
 
-from lark_bot.runner import run_command
+from lark_bot.tasks.runner import run_command
 
 
 def test_run_command_captures_success_exit_code_and_tail():

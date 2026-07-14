@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from lark_bot.detector import dedupe_tags, detect_output
+from lark_bot.tasks.detector import dedupe_tags, detect_output
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 
 router = APIRouter()
