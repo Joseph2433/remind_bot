@@ -1,32 +1,39 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from enum import StrEnum
+from datetime import datetime, timedelta
 from typing import Any
 
-from lark_bot.codex_app_server import (
+from lark_bot.codex.app_server import (
     ServerNotification,
     ServerRequest,
-    command_approval_response,
-    file_approval_response,
-    permission_response,
-    user_input_response,
 )
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexSession,
     InteractionKind,
     InteractionStatus,
     PendingInteraction,
     SessionStatus,
 )
-from lark_bot.redaction import redact_text
+from lark_bot.codex.orchestration.events import OrchestratorEvent, OrchestratorEventType
+from lark_bot.codex.orchestration.interactions import (
+    canonical_request_id as _canonical_request_id,
+    denial_decision as _denial_decision,
+    denial_response as _denial_response,
+    resolution as _resolution,
+    terminal_decision as _terminal_decision,
+)
+from lark_bot.codex.orchestration.summaries import (
+    as_utc as _as_utc,
+    request_summary as _request_summary,
+    safe_summary as _safe_summary,
+    terminal_status as _terminal_status,
+    turn_summary as _turn_summary,
+)
 
 
-_SUMMARY_LIMIT = 2000
 _ACTIVE_STATUSES = frozenset(
     {
         SessionStatus.STARTING,
@@ -41,25 +48,6 @@ _REQUEST_KINDS = {
     "item/permissions/requestApproval": InteractionKind.PERMISSION_REQUEST,
     "item/tool/requestUserInput": InteractionKind.USER_INPUT,
 }
-
-
-class OrchestratorEventType(StrEnum):
-    SESSION_STARTED = "session_started"
-    INTERACTION_REQUESTED = "interaction_requested"
-    INTERACTION_RESOLVED = "interaction_resolved"
-    SESSION_COMPLETED = "session_completed"
-    SESSION_INTERRUPTED = "session_interrupted"
-    TURN_COMPLETED = "turn_completed"
-    TURN_INTERRUPTED = "turn_interrupted"
-
-
-@dataclass(frozen=True, slots=True)
-class OrchestratorEvent:
-    event_type: OrchestratorEventType
-    session_id: str
-    interaction_id: str | None
-    status: SessionStatus
-    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,7 +338,7 @@ class CodexOrchestrator:
         if live is None:
             return False
         interaction = live.interaction
-        response, decision = self._resolution(interaction.kind, live.request, allow, answers)
+        response, decision = _resolution(interaction.kind, live.request, allow, answers)
         if not self._store.resolve_interaction_and_refresh_session(
             interaction_id,
             decision=decision,
@@ -385,7 +373,7 @@ class CodexOrchestrator:
         live = self._find_live_by_request_id(request_id)
         if live is None:
             return False
-        decision = self._terminal_decision(live, result)
+        decision = _terminal_decision(live.interaction.kind, live.request, result)
         interaction = live.interaction
         if not self._store.resolve_interaction_and_refresh_session(
             interaction.id,
@@ -547,7 +535,7 @@ class CodexOrchestrator:
                 if interrupt_error is not None:
                     raise interrupt_error
                 continue
-            response = self._denial_response(interaction.kind, live.request.params)
+            response = _denial_response(interaction.kind, live.request.params)
             try:
                 await live.responder(live.request.request_id, response)
             except BaseException as error:
@@ -716,112 +704,6 @@ class CodexOrchestrator:
         )
         return True
 
-    def _resolution(
-        self,
-        kind: InteractionKind,
-        request: ServerRequest,
-        allow: bool | None,
-        answers: Mapping[str, str] | None,
-    ) -> tuple[object, str]:
-        if kind is InteractionKind.USER_INPUT:
-            if answers is None:
-                raise ValueError("answers are required for user input")
-            questions = request.params.get("questions")
-            if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
-                raise ValueError("questions must be an array")
-            response = user_input_response(questions, answers)
-            return response, "submitted"
-        if allow is None:
-            raise ValueError("allow is required for approvals")
-        if kind is InteractionKind.EXEC_APPROVAL:
-            return command_approval_response(allow), "approved" if allow else "denied"
-        if kind is InteractionKind.FILE_CHANGE_APPROVAL:
-            return file_approval_response(allow), "accept" if allow else "decline"
-        if kind is InteractionKind.PERMISSION_REQUEST:
-            return permission_response(request.params, allow), "granted" if allow else "denied"
-        raise ValueError(f"unsupported interaction kind: {kind}")
-
-    def _terminal_decision(
-        self,
-        live: _LiveInteraction,
-        result: object,
-    ) -> str:
-        if not isinstance(result, Mapping):
-            raise ValueError("terminal response result must be an object")
-        kind = live.interaction.kind
-        if kind is InteractionKind.USER_INPUT:
-            self._validate_terminal_answers(live.request, result)
-            return "submitted"
-        if kind is InteractionKind.PERMISSION_REQUEST:
-            permissions = result.get("permissions")
-            if not isinstance(permissions, Mapping):
-                raise ValueError("terminal permission response permissions must be an object")
-            scope = result.get("scope")
-            if scope is not None and not isinstance(scope, str):
-                raise ValueError("terminal permission response scope must be a string")
-            strict = result.get("strictAutoReview")
-            if strict is not None and not isinstance(strict, bool):
-                raise ValueError(
-                    "terminal permission response strictAutoReview must be a boolean"
-                )
-            return "granted" if permissions else "denied"
-        decision = result.get("decision")
-        if not isinstance(decision, str):
-            raise ValueError("terminal approval response decision must be a string")
-        if decision in {"accept", "acceptForSession"}:
-            return (
-                "approved"
-                if kind is InteractionKind.EXEC_APPROVAL
-                else "accept"
-            )
-        if decision in {"decline", "cancel"}:
-            return "denied" if kind is InteractionKind.EXEC_APPROVAL else "decline"
-        raise ValueError("unsupported terminal approval decision")
-
-    @staticmethod
-    def _validate_terminal_answers(
-        request: ServerRequest,
-        result: Mapping[str, Any],
-    ) -> None:
-        questions = request.params.get("questions")
-        if not isinstance(questions, Sequence) or isinstance(questions, (str, bytes)):
-            raise ValueError("questions must be an array")
-        expected: set[str] = set()
-        for question in questions:
-            if not isinstance(question, Mapping):
-                raise ValueError("each question must be an object")
-            question_id = question.get("id")
-            if not isinstance(question_id, str) or not question_id:
-                raise ValueError("each question must have a non-empty string id")
-            if question_id in expected:
-                raise ValueError(f"duplicate question id: {question_id}")
-            expected.add(question_id)
-        answers = result.get("answers")
-        if not isinstance(answers, Mapping):
-            raise ValueError("terminal user input answers must be an object")
-        if set(answers) != expected:
-            raise ValueError("terminal user input answers do not match questions")
-        for answer in answers.values():
-            if not isinstance(answer, Mapping):
-                raise ValueError("each terminal answers entry must be an object")
-            values = answer.get("answers")
-            if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-                raise ValueError("each terminal answer answers must be an array")
-            if any(not isinstance(value, str) for value in values):
-                raise ValueError("terminal answer values must be strings")
-
-    @staticmethod
-    def _denial_response(
-        kind: InteractionKind, params: Mapping[str, Any]
-    ) -> object:
-        if kind is InteractionKind.EXEC_APPROVAL:
-            return command_approval_response(False)
-        if kind is InteractionKind.FILE_CHANGE_APPROVAL:
-            return file_approval_response(False)
-        if kind is InteractionKind.PERMISSION_REQUEST:
-            return permission_response(params, False)
-        raise ValueError("user input does not have a denial response")
-
     def _drop_live_for_session(self, session_id: str) -> None:
         for interaction_id in [
             interaction_id
@@ -892,68 +774,3 @@ class CodexOrchestrator:
 
     def _utc_now(self) -> datetime:
         return _as_utc(self._now())
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _safe_summary(value: str) -> str:
-    return redact_text(value)[:_SUMMARY_LIMIT]
-
-
-def _canonical_request_id(value: int | str) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _denial_decision(kind: InteractionKind) -> str:
-    if kind is InteractionKind.EXEC_APPROVAL:
-        return "denied"
-    if kind is InteractionKind.FILE_CHANGE_APPROVAL:
-        return "decline"
-    if kind is InteractionKind.PERMISSION_REQUEST:
-        return "denied"
-    raise ValueError("user input has no denial decision")
-
-
-def _request_summary(params: Mapping[str, Any]) -> str:
-    values: list[str] = []
-    for key in ("reason", "command", "path"):
-        value = params.get(key)
-        if isinstance(value, str):
-            values.append(value)
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            values.extend(str(item) for item in value if isinstance(item, str))
-    questions = params.get("questions")
-    if isinstance(questions, Sequence) and not isinstance(questions, (str, bytes)):
-        for question in questions:
-            if not isinstance(question, Mapping):
-                continue
-            for key in ("question", "header", "prompt"):
-                value = question.get(key)
-                if isinstance(value, str):
-                    values.append(value)
-    return _safe_summary(" | ".join(values))
-
-
-def _terminal_status(value: object) -> SessionStatus | None:
-    return {
-        "completed": SessionStatus.SUCCEEDED,
-        "failed": SessionStatus.FAILED,
-        "interrupted": SessionStatus.INTERRUPTED,
-    }.get(value)
-
-
-def _turn_summary(params: Mapping[str, Any], turn: Mapping[str, Any]) -> str:
-    for container in (turn, params):
-        error = container.get("error")
-        if isinstance(error, Mapping) and isinstance(error.get("message"), str):
-            return _safe_summary(error["message"])
-    for container in (turn, params):
-        for key in ("finalResponse", "final_response", "text", "outputText"):
-            value = container.get(key)
-            if isinstance(value, str):
-                return _safe_summary(value)
-    return ""

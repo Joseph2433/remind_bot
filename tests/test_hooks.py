@@ -1,4 +1,4 @@
-from lark_bot.hooks import build_notify_override, check_hooks, install_hooks, uninstall_hooks
+from lark_bot.codex.hooks import build_notify_override, check_hooks, install_hooks, uninstall_hooks
 
 
 def test_notify_override_is_valid_toml_and_quotes_windows_paths():

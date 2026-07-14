@@ -8,8 +8,7 @@ from typing import Any
 import pytest
 
 from lark_bot import __version__
-from lark_bot import codex_app_server
-from lark_bot.codex_app_server import (
+from lark_bot.codex.app_server import (
     CodexAppServerClient,
     ProcessExitedError,
     ProtocolError,
@@ -21,6 +20,7 @@ from lark_bot.codex_app_server import (
     permission_response,
     user_input_response,
 )
+from lark_bot.codex.app_server import client as app_server_client
 
 
 def test_default_process_factory_resolves_windows_command_shim(monkeypatch) -> None:
@@ -31,15 +31,15 @@ def test_default_process_factory_resolves_windows_command_shim(monkeypatch) -> N
         calls.append((args, kwargs))
         return sentinel
 
-    monkeypatch.setattr(codex_app_server.shutil, "which", lambda value: "C:/tools/codex.cmd")
+    monkeypatch.setattr(app_server_client.shutil, "which", lambda value: "C:/tools/codex.cmd")
     monkeypatch.setattr(
-        codex_app_server.asyncio,
+        app_server_client.asyncio,
         "create_subprocess_exec",
         fake_create_subprocess_exec,
     )
 
     result = asyncio.run(
-        codex_app_server._default_process_factory("codex", "app-server", stdin=-1)
+        app_server_client._default_process_factory("codex", "app-server", stdin=-1)
     )
 
     assert result is sentinel

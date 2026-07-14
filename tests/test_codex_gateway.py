@@ -10,8 +10,8 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-from lark_bot.codex_app_server import ServerRequest
-from lark_bot.codex_gateway import CodexGateway
+from lark_bot.codex.app_server import ServerRequest
+from lark_bot.codex.gateway import CodexGateway
 
 
 JsonObject = dict[str, Any]

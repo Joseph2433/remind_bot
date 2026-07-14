@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from lark_bot.codex_models import (
+from lark_bot.codex.models import (
     CodexAuditEntry,
     CodexSession,
     InteractionDecision,
@@ -15,7 +15,7 @@ from lark_bot.codex_models import (
     PendingInteraction,
     SessionStatus,
 )
-from lark_bot.storage.codex_sqlite import SQLiteCodexStore
+from lark_bot.storage.codex import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 4, 0, tzinfo=timezone.utc)
