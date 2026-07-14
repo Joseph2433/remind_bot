@@ -221,6 +221,21 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 
 `lark-cli` is useful for validating that your app, tenant, permissions, and receive IDs are correct. It is not a Lark Bot runtime dependency. Use it separately to prove the same Bot can send a message before debugging Lark Bot configuration.
 
+## Development Structure
+
+Implementation modules are grouped by functional ownership under `src/lark_bot/`:
+
+- `commands/`: Typer command composition, Codex argument parsing, and shared CLI helpers.
+- `tasks/`: subprocess execution and output-status detection.
+- `notifications/`: notification interfaces and agent event adapters.
+- `lark/`: Lark OpenAPI client, inbound event normalization, reply routing, and long connection.
+- `codex/`: Codex domain models, app-server transport, gateway, TUI integration, hooks, probes, and orchestration.
+- `storage/codex/`: Codex SQLite store, versioned schema, and row mapping.
+- `server/daemon/`: authenticated daemon API, token handling, and runtime exports.
+- `server/`: public FastAPI event callback endpoints.
+
+The package root contains only executable entry points and genuinely shared contracts: `cli.py`, `config.py`, `models.py`, and `redaction.py`.
+
 ## Security Notes
 
 - Notification text is redacted before sending.

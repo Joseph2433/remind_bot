@@ -1,4 +1,5 @@
 from importlib import import_module
+from pathlib import Path
 
 
 def test_canonical_task_and_notification_modules_are_importable() -> None:
@@ -120,3 +121,16 @@ def test_cli_is_a_thin_stable_composition_root() -> None:
     assert import_module("lark_bot.commands.app").app is cli.app
     assert import_module("lark_bot.commands.codex_args").uses_remote_resume_picker
     assert import_module("lark_bot.commands.common").build_codex_notification_from_json
+
+
+def test_package_root_contains_only_entrypoints_and_shared_contracts() -> None:
+    root = Path(__file__).parents[1] / "src" / "lark_bot"
+    actual = {path.name for path in root.glob("*.py")}
+    assert actual == {
+        "__init__.py",
+        "__main__.py",
+        "cli.py",
+        "config.py",
+        "models.py",
+        "redaction.py",
+    }
