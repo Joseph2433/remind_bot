@@ -6,7 +6,7 @@ import pytest
 
 from lark_bot.codex.app_server import ServerNotification, ServerRequest
 from lark_bot.codex.models import InteractionKind, InteractionStatus, SessionStatus
-from lark_bot.codex_orchestrator import (
+from lark_bot.codex.orchestration import (
     CodexOrchestrator,
     OrchestratorEventType,
 )

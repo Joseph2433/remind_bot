@@ -99,3 +99,10 @@ def test_codex_storage_package_exports_store_and_schema_tables() -> None:
         "notification_outbox",
         "codex_audit",
     }
+
+
+def test_codex_orchestrator_has_focused_modules() -> None:
+    assert import_module("lark_bot.codex.orchestration.service").CodexOrchestrator
+    assert import_module("lark_bot.codex.orchestration.events").OrchestratorEventType
+    assert import_module("lark_bot.codex.orchestration.interactions").resolution
+    assert import_module("lark_bot.codex.orchestration.summaries").request_summary
