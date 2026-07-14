@@ -70,3 +70,10 @@ def test_codex_runtime_modules_live_under_codex_package() -> None:
     assert hasattr(modules["hooks"], "build_notify_override")
     assert hasattr(modules["hook_adapter"], "handle_callback")
     assert hasattr(modules["probe"], "run_local_probe")
+
+
+def test_lark_modules_separate_client_routing_and_connection() -> None:
+    assert import_module("lark_bot.lark.client").LarkBotClient
+    assert import_module("lark_bot.lark.events").LarkMessageEvent
+    assert import_module("lark_bot.lark.router").LarkControlRouter
+    assert import_module("lark_bot.lark.connection").LarkLongConnection

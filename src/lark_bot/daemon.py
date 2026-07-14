@@ -19,8 +19,9 @@ from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, 
 from lark_bot.codex.interactive import InteractiveSessionManager
 from lark_bot.codex.models import CodexSession, InteractionKind, SessionStatus
 from lark_bot.codex_orchestrator import CodexOrchestrator
-from lark_bot.lark_control import LarkControlRouter, LarkLongConnection
-from lark_bot.notifier.lark import LarkBotClient
+from lark_bot.lark.client import LarkBotClient
+from lark_bot.lark.connection import LarkLongConnection
+from lark_bot.lark.router import LarkControlRouter
 from lark_bot.redaction import redact_text
 from lark_bot.storage.codex_sqlite import SQLiteCodexStore
 
