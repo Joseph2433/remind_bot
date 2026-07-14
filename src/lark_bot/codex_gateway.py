@@ -46,6 +46,9 @@ INTERCEPTED_SERVER_METHODS = frozenset(
 DEFAULT_MAX_MESSAGE_SIZE = 1024 * 1024
 DEFAULT_QUEUE_CAPACITY = 64
 DEFAULT_CLOSE_TIMEOUT = 2.0
+SESSION_PICKER_UNSUPPORTED_REASON = (
+    "session picker unsupported; use resume --last, an explicit session ID, or --no-lark"
+)
 
 
 class CodexGateway:
@@ -89,6 +92,7 @@ class CodexGateway:
         self._server: Server | None = None
         self._upstream_reader: asyncio.Task[None] | None = None
         self._callback_tasks: set[asyncio.Task[None]] = set()
+        self._callback_tasks_by_request: dict[int | str, asyncio.Task[None]] = {}
         self._to_terminal: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_capacity)
         self._terminal: ServerConnection | None = None
         self._upstream_send_lock = asyncio.Lock()
@@ -96,6 +100,7 @@ class CodexGateway:
         self._intercepted_ids: set[int | str] = set()
         self._responded_ids: set[int | str] = set()
         self._terminal_requests: dict[int | str, tuple[str, JsonObject]] = {}
+        self._active_turns: dict[str, str] = {}
         self._started = False
         self._closing = False
 
@@ -151,6 +156,8 @@ class CodexGateway:
         reader, self._upstream_reader = self._upstream_reader, None
         callbacks = tuple(self._callback_tasks)
         self._callback_tasks.clear()
+        self._callback_tasks_by_request.clear()
+        self._active_turns.clear()
 
         if server is not None:
             server.close()
@@ -183,7 +190,7 @@ class CodexGateway:
 
     async def _handle_terminal(self, websocket: ServerConnection) -> None:
         if self._terminal is not None:
-            await websocket.close(1008, "only one terminal client is allowed")
+            await websocket.close(1008, SESSION_PICKER_UNSUPPORTED_REASON)
             return
         self._terminal = websocket
         sender = asyncio.create_task(
@@ -252,6 +259,19 @@ class CodexGateway:
                 resolved_id = params.get("requestId")
                 if self._valid_id(resolved_id):
                     self._responded_ids.add(resolved_id)
+                    callback = self._callback_tasks_by_request.pop(
+                        resolved_id, None
+                    )
+                    if callback is not None:
+                        callback.cancel()
+
+        if request_id is None and method == "turn/started":
+            params = message.get("params")
+            thread_id = params.get("threadId") if isinstance(params, dict) else None
+            turn = params.get("turn") if isinstance(params, dict) else None
+            turn_id = turn.get("id") if isinstance(turn, dict) else None
+            if isinstance(thread_id, str) and isinstance(turn_id, str):
+                self._active_turns[thread_id] = turn_id
 
         response_id = self._response_id(message)
         if response_id is not None:
@@ -281,24 +301,56 @@ class CodexGateway:
 
         if intercepted:
             params = message.get("params")
+            request_params = dict(params) if isinstance(params, dict) else {}
+            thread_id = request_params.get("threadId")
+            if isinstance(thread_id, str) and "turnId" not in request_params:
+                turn_id = self._active_turns.get(thread_id)
+                if turn_id is not None:
+                    request_params["turnId"] = turn_id
             request = ServerRequest(
                 request_id=request_id,
                 method=method,
-                params=params if isinstance(params, dict) else {},
+                params=request_params,
             )
             task = asyncio.create_task(
                 self._run_server_request_callback(request),
                 name=f"codex-gateway-request-{request_id}",
             )
             self._callback_tasks.add(task)
-            task.add_done_callback(self._callback_tasks.discard)
+            self._callback_tasks_by_request[request_id] = task
+            task.add_done_callback(
+                lambda completed, current_id=request_id: self._callback_finished(
+                    current_id, completed
+                )
+            )
+
+        if request_id is None and method == "turn/completed":
+            params = message.get("params")
+            thread_id = params.get("threadId") if isinstance(params, dict) else None
+            turn = params.get("turn") if isinstance(params, dict) else None
+            turn_id = turn.get("id") if isinstance(turn, dict) else None
+            if (
+                isinstance(thread_id, str)
+                and isinstance(turn_id, str)
+                and self._active_turns.get(thread_id) == turn_id
+            ):
+                self._active_turns.pop(thread_id, None)
 
     async def _run_server_request_callback(self, request: ServerRequest) -> None:
+        if request.request_id in self._responded_ids:
+            return
         try:
             await self._on_server_request(request, self.respond_upstream)
         except Exception:
             # The terminal still owns the pending request if the side channel fails.
             return
+
+    def _callback_finished(
+        self, request_id: int | str, task: asyncio.Task[None]
+    ) -> None:
+        self._callback_tasks.discard(task)
+        if self._callback_tasks_by_request.get(request_id) is task:
+            self._callback_tasks_by_request.pop(request_id, None)
 
     async def _handle_terminal_message(
         self, message: JsonObject, raw_message: str

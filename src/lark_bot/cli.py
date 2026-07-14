@@ -65,6 +65,83 @@ app.add_typer(codex_app, name="codex")
 codex_app.add_typer(job_app, name="job")
 codex_app.add_typer(hooks_app, name="hooks")
 
+REMOTE_RESUME_PICKER_MESSAGE = (
+    "Use resume --last or an explicit session ID; the remote session picker "
+    "is unsupported; use --no-lark."
+)
+_CODEX_GLOBAL_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "-a",
+        "--ask-for-approval",
+    }
+)
+_CODEX_GLOBAL_FLAG_OPTIONS = frozenset(
+    {
+        "--oss",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--search",
+        "--no-alt-screen",
+        "--strict-config",
+    }
+)
+_CODEX_ATTACHED_VALUE_SHORT_PREFIXES = ("-c", "-i", "-m", "-p", "-s", "-C", "-a")
+
+
+def _uses_remote_resume_picker(args: Sequence[str]) -> bool:
+    """Return whether resume would require the unsupported remote picker."""
+
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return False
+        if token in _CODEX_GLOBAL_FLAG_OPTIONS:
+            index += 1
+            continue
+
+        option, separator, _ = token.partition("=")
+        if separator and option in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 1
+            continue
+        if any(
+            len(token) > len(prefix) and token.startswith(prefix)
+            for prefix in _CODEX_ATTACHED_VALUE_SHORT_PREFIXES
+        ):
+            index += 1
+            continue
+        if token in _CODEX_GLOBAL_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(args):
+                return False
+            index += 2
+            continue
+        if token.startswith("-") or token != "resume":
+            return False
+
+        resume_args = args[index:]
+        if any(token in {"--last", "--last=true"} for token in resume_args[1:]):
+            return False
+        return len(resume_args) == 1 or resume_args[1].startswith("-")
+    return False
+
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(level=level.upper(), format="%(levelname)s %(name)s: %(message)s")
@@ -230,6 +307,9 @@ def _emit_result(value: object, json_output: bool) -> None:
 
 
 def _run_codex_tui(args: Sequence[str], *, no_lark: bool = False) -> None:
+    if not no_lark and _uses_remote_resume_picker(args):
+        raise typer.BadParameter(REMOTE_RESUME_PICKER_MESSAGE)
+
     settings = get_settings()
     descriptor: dict[str, object] | None = None
     try:

@@ -547,6 +547,62 @@ class SQLiteCodexStore:
             )
         return interaction_ids
 
+    def finish_interactive_turn(
+        self,
+        session_id: str,
+        *,
+        turn_id: str,
+        summary: str,
+        updated_at: datetime,
+    ) -> list[str] | None:
+        if not turn_id:
+            raise ValueError("turn_id must be a non-empty string")
+        active_values = tuple(status.value for status in _ACTIVE_SESSION_STATUSES)
+        placeholders = ", ".join("?" for _ in active_values)
+        timestamp = _serialize_datetime(updated_at)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                f"""
+                UPDATE codex_sessions
+                SET status = ?, turn_id = NULL, summary = ?, updated_at = ?
+                WHERE id = ? AND turn_id = ? AND status IN ({placeholders})
+                """,
+                (
+                    SessionStatus.RUNNING.value,
+                    _safe_summary(summary),
+                    timestamp,
+                    session_id,
+                    turn_id,
+                    *active_values,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            interaction_ids = [
+                row["id"]
+                for row in connection.execute(
+                    """
+                    SELECT id FROM codex_interactions
+                    WHERE session_id = ? AND status = ? ORDER BY id
+                    """,
+                    (session_id, InteractionStatus.PENDING.value),
+                ).fetchall()
+            ]
+            connection.execute(
+                """
+                UPDATE codex_interactions SET status = ?, resolved_at = ?
+                WHERE session_id = ? AND status = ?
+                """,
+                (
+                    InteractionStatus.CANCELLED.value,
+                    timestamp,
+                    session_id,
+                    InteractionStatus.PENDING.value,
+                ),
+            )
+        return interaction_ids
+
     def expire_interaction(
         self,
         interaction_id: str,

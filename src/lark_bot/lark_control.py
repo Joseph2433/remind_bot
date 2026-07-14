@@ -145,11 +145,27 @@ class LarkControlRouter:
         )
         if interaction is None:
             return LarkControlResult(False, "not_pending")
+        text = _strip_mentions(event.text)
+        if interaction.kind in {
+            InteractionKind.EXEC_APPROVAL,
+            InteractionKind.FILE_CHANGE_APPROVAL,
+            InteractionKind.PERMISSION_REQUEST,
+        }:
+            allow = _parse_approval_answer(text)
+            if allow is None:
+                return LarkControlResult(
+                    False, "invalid_approval_answer", interaction.id
+                )
+            won = await self._orchestrator.resolve_interaction(
+                interaction.id, event.actor_id, allow=allow
+            )
+            return LarkControlResult(
+                won, "resolved" if won else "already_resolved", interaction.id
+            )
         if interaction.kind is not InteractionKind.USER_INPUT:
             return LarkControlResult(False, "wrong_interaction_kind", interaction.id)
         if event.chat_type.casefold() != "p2p" and not event.mentioned_bot:
             return LarkControlResult(False, "bot_not_mentioned", interaction.id)
-        text = _strip_mentions(event.text)
         question_ids = self._orchestrator.get_user_input_question_ids(interaction.id)
         answers = _parse_answers(text, question_ids)
         if answers is None:
@@ -165,6 +181,15 @@ _MENTION_RE = re.compile(r"(?:^|\s)@_user_\d+\b")
 
 def _strip_mentions(text: str) -> str:
     return _MENTION_RE.sub(" ", text).strip()
+
+
+def _parse_approval_answer(text: str) -> bool | None:
+    answer = text.strip().casefold()
+    if answer in {"yes", "y"}:
+        return True
+    if answer in {"no", "n"}:
+        return False
+    return None
 
 
 def _parse_answers(text: str, question_ids: tuple[str, ...]) -> dict[str, str] | None:

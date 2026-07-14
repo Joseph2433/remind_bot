@@ -77,6 +77,30 @@ def test_reaction_routes_exact_pending_approval_and_deduplicates(emoji, allow):
     assert run(router.route(event)).reason == "duplicate"
 
 
+@pytest.mark.parametrize(
+    ("answer", "allow"),
+    [("yes", True), ("Y", True), ("no", False), ("N", False)],
+)
+@pytest.mark.parametrize(
+    "kind",
+    [
+        InteractionKind.EXEC_APPROVAL,
+        InteractionKind.FILE_CHANGE_APPROVAL,
+        InteractionKind.PERMISSION_REQUEST,
+    ],
+)
+def test_text_reply_routes_exact_pending_approval(answer, allow, kind):
+    interaction = NS(id="i1", kind=kind)
+    store, orchestrator = Store(interaction), Orchestrator()
+    router = LarkControlRouter(store, orchestrator)
+    event = LarkMessageEvent(
+        "e1", "reply", "prompt", None, "chat", "group", "u1", answer, False
+    )
+
+    assert run(router.route(event)).handled
+    assert orchestrator.calls == [(("i1", "u1"), {"allow": allow})]
+
+
 def test_group_reply_requires_mention_and_parses_multiple_answers():
     interaction = NS(id="i1", kind=InteractionKind.USER_INPUT)
     store, orchestrator = Store(interaction), Orchestrator(("q1", "q2"))
