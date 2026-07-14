@@ -19,7 +19,7 @@ from lark_bot.config import Settings, build_config_checks, get_settings, public_
 from lark_bot.codex.hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
 from lark_bot.codex.tui import CodexTuiLauncher, CodexTuiOptions
 from lark_bot.tasks.detector import detect_output
-from lark_bot.daemon import build_runtime, create_daemon_app, ensure_daemon_token
+from lark_bot.server.daemon import build_runtime, create_daemon_app, ensure_daemon_token
 from lark_bot.codex.hooks import check_hooks, install_hooks, uninstall_hooks
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 from lark_bot.lark.client import LarkBotClient

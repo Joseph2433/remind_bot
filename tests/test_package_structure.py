@@ -106,3 +106,9 @@ def test_codex_orchestrator_has_focused_modules() -> None:
     assert import_module("lark_bot.codex.orchestration.events").OrchestratorEventType
     assert import_module("lark_bot.codex.orchestration.interactions").resolution
     assert import_module("lark_bot.codex.orchestration.summaries").request_summary
+
+
+def test_daemon_separates_auth_runtime_and_routes() -> None:
+    assert import_module("lark_bot.server.daemon.auth").ensure_daemon_token
+    assert import_module("lark_bot.server.daemon.runtime").DaemonRuntime
+    assert import_module("lark_bot.server.daemon.app").create_daemon_app
