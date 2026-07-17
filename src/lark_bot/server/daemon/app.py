@@ -15,12 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
 from lark_bot.codex.interactive import InteractiveSessionManager
-from lark_bot.codex.models import CodexSession, InteractionKind, SessionStatus
+from lark_bot.codex.models import CodexSession, SessionStatus
 from lark_bot.codex.orchestration import CodexOrchestrator
 from lark_bot.lark.client import LarkBotClient
 from lark_bot.lark.connection import LarkLongConnection
+from lark_bot.lark.messages import MessageFormat, RenderedMessage
+from lark_bot.lark.render import render_outbox_notification
 from lark_bot.lark.router import LarkControlRouter
-from lark_bot.redaction import redact_text
 from lark_bot.storage.codex import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
@@ -130,7 +131,8 @@ class DaemonRuntime:
         while True:
             for item in self.store.list_due_outbox(now=self._utc_now(), limit=50):
                 try:
-                    message_id = await asyncio.to_thread(self.lark_client.send_text, self._render(item))
+                    rendered = self._render(item)
+                    message_id = await asyncio.to_thread(self.lark_client.send_rendered, rendered)
                     if item.interaction_id:
                         self.store.attach_lark_message_id(item.interaction_id, message_id)
                     self.store.mark_outbox_sent(item.id)
@@ -178,35 +180,20 @@ class DaemonRuntime:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def _render(self, item: Any) -> str:
-        summary = redact_text(str(item.payload_summary))[:500]
-        headings = {
-            "orchestrator:session_completed": "Codex 会话已完成",
-            "orchestrator:session_interrupted": "Codex 会话已中断",
-            "orchestrator:turn_completed": "Codex 本轮已完成",
-            "orchestrator:turn_interrupted": "Codex 本轮已中断",
-        }
-        heading = headings.get(
-            str(item.notification_type),
-            str(item.notification_type)
-            .replace("orchestrator:", "Codex ")
-            .replace("_", " "),
-        )
-        if item.notification_type.endswith("interaction_requested"):
+    def _render(self, item: Any) -> RenderedMessage:
+        interaction = None
+        if str(item.notification_type).endswith("interaction_requested"):
             getter = getattr(self.store, "get_interaction", None)
-            interaction = getter(item.interaction_id) if getter is not None and item.interaction_id else None
-            if interaction is not None and interaction.kind is InteractionKind.USER_INPUT:
-                heading = "Codex 请求输入"
-                instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
-            else:
-                heading = "Codex 请求审批"
-                instruction = (
-                    "请长按本消息并选择“回复”：输入 yes 或 y 表示允许，"
-                    "输入 no 或 n 表示拒绝。"
-                )
-            return f"{heading}\n{summary}\n{instruction}"
-        text = f"{heading}\n{summary}"
-        return text
+            if getter is not None and item.interaction_id:
+                interaction = getter(item.interaction_id)
+        message_format: MessageFormat = getattr(self.settings, "message_format", "card")
+        if message_format not in {"card", "text"}:
+            message_format = "card"
+        return render_outbox_notification(
+            item,
+            message_format=message_format,
+            interaction=interaction,
+        )
 
     async def close(self) -> None:
         if self._closed: return
@@ -328,7 +315,16 @@ def build_runtime(settings: Any) -> DaemonRuntime:
     store = SQLiteCodexStore(settings.sqlite_path)
     app_server = CodexAppServerClient(codex_path=settings.codex_path)
     orchestrator = CodexOrchestrator(store, app_server, now=lambda: datetime.now(timezone.utc), id_factory=lambda: str(uuid.uuid4()), interaction_timeout_seconds=settings.interaction_timeout_seconds, notification_delay_seconds=settings.notification_delay_seconds)
-    lark = LarkBotClient(app_id=settings.lark_app_id, app_secret=settings.lark_app_secret, receive_id=settings.lark_receive_id, receive_id_type=settings.lark_receive_id_type, base_url=settings.lark_base_url, timeout_seconds=settings.http_timeout_seconds)
+    lark = LarkBotClient(
+        app_id=settings.lark_app_id,
+        app_secret=settings.lark_app_secret,
+        receive_id=settings.lark_receive_id,
+        receive_id_type=settings.lark_receive_id_type,
+        base_url=settings.lark_base_url,
+        timeout_seconds=settings.http_timeout_seconds,
+        message_format=getattr(settings, "message_format", "card"),
+        output_tail_lines=getattr(settings, "output_tail_lines", 40),
+    )
     connection = LarkLongConnection(settings.lark_app_id, settings.lark_app_secret, queue_capacity=settings.lark_event_queue_capacity)
     interactive_manager = InteractiveSessionManager(
         orchestrator,

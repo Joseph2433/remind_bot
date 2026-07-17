@@ -92,9 +92,21 @@ def run(
 
 
 @app.command("send-test")
-def send_test(message: str = typer.Option("hello from lark-bot", "--message", "-m")) -> None:
+def send_test(
+    message: str = typer.Option("hello from lark-bot", "--message", "-m"),
+    message_format: str | None = typer.Option(
+        None,
+        "--format",
+        help="Outbound format: card or text. Defaults to LARK_BOT_MESSAGE_FORMAT.",
+    ),
+) -> None:
     """Send a test notification through the configured Lark/Feishu app Bot."""
     settings = get_settings()
+    if message_format is not None:
+        normalized = message_format.strip().casefold()
+        if normalized not in {"card", "text"}:
+            raise typer.BadParameter("--format must be card or text")
+        settings = settings.model_copy(update={"message_format": normalized})
     configure_logging(settings.log_level)
     task = TaskResult(
         name="send-test",

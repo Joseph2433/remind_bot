@@ -42,6 +42,16 @@ def test_daemon_settings_have_safe_defaults():
     assert settings.interaction_expiry_poll_seconds == 1.0
     assert settings.outbox_poll_seconds == 0.5
     assert settings.notification_delay_seconds == 5.0
+    assert settings.message_format == "card"
+
+
+def test_message_format_can_be_loaded_from_environment(monkeypatch):
+    monkeypatch.setenv("LARK_BOT_MESSAGE_FORMAT", "text")
+
+    settings = Settings()
+
+    assert settings.message_format == "text"
+    assert public_settings_summary(settings)["message_format"] == "text"
 
 
 def test_notification_delay_can_be_loaded_from_environment(monkeypatch):

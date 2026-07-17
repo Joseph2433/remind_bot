@@ -78,6 +78,8 @@ def test_lark_modules_separate_client_routing_and_connection() -> None:
     assert import_module("lark_bot.lark.events").LarkMessageEvent
     assert import_module("lark_bot.lark.router").LarkControlRouter
     assert import_module("lark_bot.lark.connection").LarkLongConnection
+    assert import_module("lark_bot.lark.messages").RenderedMessage
+    assert callable(import_module("lark_bot.lark.render").render_task_notification)
 
 
 def test_codex_storage_package_exports_store_and_schema_tables() -> None:

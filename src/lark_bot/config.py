@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lark_bot.models import ReceiveIdType
+
+MessageFormat = Literal["card", "text"]
 
 
 class ConfigCheck(BaseModel):
@@ -41,6 +44,7 @@ class Settings(BaseSettings):
     outbox_poll_seconds: float = Field(default=0.5, gt=0, le=60)
     notification_delay_seconds: float = Field(default=5.0, ge=0, le=300)
     lark_event_queue_capacity: int = Field(default=100, ge=1, le=10000)
+    message_format: MessageFormat = "card"
 
 
 def get_settings() -> Settings:
@@ -70,6 +74,11 @@ def build_config_checks(settings: Settings) -> list[ConfigCheck]:
             ok=bool(settings.sqlite_path),
             message=f"sqlite_path={settings.sqlite_path}",
         ),
+        ConfigCheck(
+            name="message_format",
+            ok=settings.message_format in {"card", "text"},
+            message=f"message_format={settings.message_format}",
+        ),
     ]
     return checks
 
@@ -95,6 +104,7 @@ def public_settings_summary(settings: Settings) -> dict[str, str | int | float]:
         "outbox_poll_seconds": settings.outbox_poll_seconds,
         "notification_delay_seconds": settings.notification_delay_seconds,
         "lark_event_queue_capacity": settings.lark_event_queue_capacity,
+        "message_format": settings.message_format,
     }
 
 

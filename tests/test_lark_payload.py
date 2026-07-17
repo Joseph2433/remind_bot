@@ -39,6 +39,44 @@ def test_notification_text_contains_summary_without_secret():
     assert "[REDACTED]" in text
 
 
+def test_send_request_defaults_to_interactive_card():
+    captured = {}
+
+    def handler(request):
+        if "tenant_access_token" in str(request.url):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "token", "expire": 7200}
+            )
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"code": 0, "data": {"message_id": "om_card"}})
+
+    task = TaskResult(
+        name="codex task",
+        command=["codex"],
+        exit_code=0,
+        duration_seconds=1.0,
+        stdout_tail=["ok"],
+        stderr_tail=[],
+    )
+    request = NotificationRequest(
+        task=task,
+        detection=DetectionResult(status=TaskStatus.SUCCEEDED, tags=["succeeded"]),
+    )
+    client = LarkBotClient(
+        "id",
+        "secret",
+        "chat",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        message_format="card",
+    )
+
+    assert client.send(request) == "om_card"
+    assert captured["payload"]["msg_type"] == "interactive"
+    card = json.loads(captured["payload"]["content"])
+    assert card["schema"] == "2.0"
+    assert card["header"]["template"] == "green"
+
+
 @pytest.mark.parametrize("payload, expected_error", [
     ({"code": 0, "data": {"message_id": "om_1"}}, None),
     ({"code": 0, "data": {}}, LarkAPIError),
