@@ -30,6 +30,8 @@ def send_with_dedupe(request: NotificationRequest, settings: Settings) -> None:
         receive_id_type=settings.lark_receive_id_type,
         base_url=settings.lark_base_url,
         timeout_seconds=settings.http_timeout_seconds,
+        message_format=settings.message_format,
+        output_tail_lines=settings.output_tail_lines,
     )
     try:
         client.send(request)

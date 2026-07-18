@@ -11,6 +11,7 @@ The original MVP follows the same practical shape as `ntfy done`: wrap a command
 - Capture stdout, stderr, exit code, and runtime.
 - Detect likely manual-intervention output such as approval prompts, permission prompts, and waiting-for-input messages.
 - Send only a short redacted tail summary, never the full log by default.
+- Render outbound notifications as Feishu interactive cards (schema 2.0) with markdown body and status-colored headers; set `LARK_BOT_MESSAGE_FORMAT=text` to fall back to plain text.
 - Send Lark/Feishu messages through app ID and app secret using tenant access tokens.
 - Cache access tokens before expiry.
 - Suppress duplicate notifications within a configurable cooldown using SQLite.
@@ -59,6 +60,7 @@ LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
 LARK_BOT_OUTBOX_POLL_SECONDS=0.5
 LARK_BOT_NOTIFICATION_DELAY_SECONDS=5.0
 LARK_BOT_LARK_EVENT_QUEUE_CAPACITY=100
+LARK_BOT_MESSAGE_FORMAT=card
 ```
 
 ## Usage
@@ -73,6 +75,7 @@ Send a local smoke-test message:
 
 ```bash
 lark-bot send-test --message "lark-bot smoke test"
+lark-bot send-test --message "plain text fallback" --format text
 ```
 
 Send a Codex event from a JSON file or stdin:

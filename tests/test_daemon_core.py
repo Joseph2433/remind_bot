@@ -69,9 +69,27 @@ class FakeLongConnection:
 
 class FakeLark:
     def __init__(self):
-        self.messages, self.closed = [], False
+        self.messages, self.rendered, self.closed = [], [], False
 
     def send_text(self, text):
+        self.messages.append(text)
+        return "m1"
+
+    def send_rendered(self, message):
+        self.rendered.append(message)
+        # Keep a plain-text view for assertions that scan notification copy.
+        if getattr(message, "msg_type", None) == "text":
+            text = message.content.get("text", "")
+        else:
+            elements = message.content.get("body", {}).get("elements", [])
+            text = "\n".join(
+                str(element.get("content", ""))
+                for element in elements
+                if isinstance(element, dict)
+            )
+            header = message.content.get("header", {}).get("title", {})
+            title = header.get("content", "") if isinstance(header, dict) else ""
+            text = f"{title}\n{text}"
         self.messages.append(text)
         return "m1"
 
@@ -85,6 +103,7 @@ def _runtime(tmp_path: Path, interactive_manager=None):
         interaction_expiry_poll_seconds=0.01,
         notification_delay_seconds=5.0,
         daemon_token_path=tmp_path / "token",
+        message_format="card",
     )
     runtime = DaemonRuntime(settings, store, orchestrator, lark, connection, SimpleNamespace(route=lambda event: None), interactive_manager=interactive_manager, now=lambda: NOW)
     return runtime, store, orchestrator, connection, lark
@@ -219,17 +238,22 @@ def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp
         SimpleNamespace(
             notification_type="orchestrator:turn_completed",
             payload_summary="done",
+            interaction_id=None,
         )
     )
     interrupted = runtime._render(
         SimpleNamespace(
             notification_type="orchestrator:turn_interrupted",
             payload_summary="stopped",
+            interaction_id=None,
         )
     )
 
-    assert completed == "Codex 本轮已完成\ndone"
-    assert interrupted == "Codex 本轮已中断\nstopped"
+    assert completed.msg_type == "interactive"
+    assert completed.content["header"]["title"]["content"] == "Codex 本轮已完成"
+    assert "done" in completed.content["body"]["elements"][0]["content"]
+    assert interrupted.content["header"]["title"]["content"] == "Codex 本轮已中断"
+    assert "stopped" in interrupted.content["body"]["elements"][0]["content"]
 
 
 def test_runtime_runs_one_expiry_loop_and_collects_it_on_close(workspace_tmp_path):
@@ -285,10 +309,10 @@ def test_outbox_retry_is_scheduled_from_failure_time(workspace_tmp_path):
             next_attempt_at=NOW,
         )
 
-        def fail(_text):
+        def fail(_message):
             raise RuntimeError("network detail")
 
-        lark.send_text = fail
+        lark.send_rendered = fail
         worker = asyncio.create_task(runtime._outbox_worker())
         await asyncio.sleep(0.03)
         worker.cancel()
