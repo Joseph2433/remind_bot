@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 SCHEMA_VERSION = 4
-MIGRATIONS: dict[int, tuple[str, ...]] = {4: ()}
+MIGRATIONS: dict[int, tuple[str, ...]] = {1: (), 2: (), 3: (), 4: ()}
 
 
 def _legacy_schema(connection: sqlite3.Connection) -> None:
