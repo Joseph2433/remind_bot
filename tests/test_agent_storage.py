@@ -97,3 +97,29 @@ def test_schema_failure_rolls_back_and_restores_foreign_keys(monkeypatch):
     assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     assert connection.execute("SELECT name FROM sqlite_master WHERE name='agent_sessions'").fetchone() is None
+
+
+def test_version3_legacy_rows_migrate_to_all_canonical_tables():
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.executescript("""
+    PRAGMA user_version=3;
+    CREATE TABLE codex_sessions(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,name TEXT,cwd TEXT,model TEXT,sandbox TEXT,status TEXT,summary TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE codex_interactions(id TEXT PRIMARY KEY,session_id TEXT,request_id TEXT,kind TEXT,status TEXT,lark_message_id TEXT,payload_summary TEXT,requested_at TEXT,resolved_at TEXT,expires_at TEXT,actor_id TEXT,decision TEXT);
+    CREATE TABLE codex_event_dedupe(event_id TEXT PRIMARY KEY,received_at TEXT);
+    CREATE TABLE notification_outbox(id INTEGER PRIMARY KEY,session_id TEXT,interaction_id TEXT,notification_type TEXT,payload_summary TEXT,attempt_count INTEGER,next_attempt_at TEXT,sent_at TEXT,last_error TEXT,created_at TEXT);
+    CREATE TABLE codex_audit(id INTEGER PRIMARY KEY,session_id TEXT,interaction_id TEXT,event_type TEXT,actor_id TEXT,detail_summary TEXT,created_at TEXT);
+    INSERT INTO codex_sessions VALUES('s','conv',NULL,'n','/tmp',NULL,'workspace-write','running','','2020','2020');
+    INSERT INTO codex_interactions VALUES('i','s','req','exec_approval','pending',NULL,'safe','2020',NULL,'2021',NULL,NULL);
+    INSERT INTO codex_event_dedupe VALUES('e','2020');
+    INSERT INTO notification_outbox VALUES(1,'s','i','approval','safe',0,'2020',NULL,NULL,'2020');
+    INSERT INTO codex_audit VALUES(1,'s','i','started',NULL,'safe','2020');
+    """)
+    agent_schema.initialize_schema(connection)
+    assert connection.execute("SELECT id FROM agent_sessions").fetchone()[0] == "s"
+    assert connection.execute("SELECT id FROM agent_interactions").fetchone()[0] == "i"
+    assert connection.execute("SELECT event_id FROM agent_event_dedupe").fetchone()[0] == "e"
+    assert connection.execute("SELECT session_name FROM agent_notification_outbox").fetchone()[0] == "n"
+    assert connection.execute("SELECT id FROM agent_audit").fetchone()[0] == 1
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
