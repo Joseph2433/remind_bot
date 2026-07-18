@@ -10,13 +10,16 @@ from lark_bot.modules.agent.agent_model import (
     SessionStatus,
 )
 from lark_bot.modules.agent.agent_protocol import AgentAdapter
+from lark_bot.modules.agent.agent_service import AgentRegistry, AgentSessionService
 
 __all__ = [
     "AgentAdapter",
     "AgentEvent",
     "AgentInteraction",
     "AgentKind",
+    "AgentRegistry",
     "AgentSession",
+    "AgentSessionService",
     "InteractionKind",
     "InteractionStatus",
     "SessionDisplay",
