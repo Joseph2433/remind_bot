@@ -4,129 +4,78 @@ import pytest
 from typer.testing import CliRunner
 
 from lark_bot.cli import app
+from lark_bot.modules.claude.claude_adapter import ClaudeEvent, claude_event_to_notification
+from lark_bot.modules.claude.claude_service import build_claude_notification_from_json
 from lark_bot.modules.task.task_model import TaskStatus
 
 
-def test_claude_stop_event_preserves_session_identity() -> None:
-    from lark_bot.modules.claude.claude_adapter import (
-        ClaudeEvent,
-        claude_event_to_notification,
-    )
-
+def test_stop_hook_is_completed_with_turn_identity() -> None:
     request = claude_event_to_notification(
         ClaudeEvent(
             session_id="claude-session-1",
-            session_name="docs",
-            event_name="Stop",
-            status="completed",
-            summary="finished",
+            hook_event_name="Stop",
+            stop_hook_active=True,
         )
     )
 
     assert request.context is not None
     assert request.context.session_id == "claude-session-1"
-    assert request.context.session_name == "docs"
-    assert request.context.agent.value == "claude"
-    assert request.detection.status is TaskStatus.SUCCEEDED
+    assert request.detection.status is TaskStatus.COMPLETED
+    assert request.task.exit_code == 0
+    assert "turn_completed" in request.detection.tags
+    assert request.event_id
 
 
-def test_claude_failed_stop_maps_to_failure() -> None:
-    from lark_bot.modules.claude.claude_adapter import (
-        ClaudeEvent,
-        claude_event_to_notification,
-    )
-
+def test_stop_failure_maps_failed_without_synthetic_status() -> None:
     request = claude_event_to_notification(
         ClaudeEvent(
-            sessionId="claude-session-2",
-            name="tests",
-            hook_event_name="Stop",
-            status="failed",
-            exit_code=1,
+            session_id="claude-session-2",
+            hook_event_name="StopFailure",
+            error="model stopped unexpectedly",
         )
     )
 
-    assert request.context is not None
-    assert request.context.session_id == "claude-session-2"
     assert request.detection.status is TaskStatus.FAILED
+    assert request.task.exit_code != 0
+    assert "turn_failed" in request.detection.tags
 
 
-def test_claude_permission_request_maps_to_waiting() -> None:
-    from lark_bot.modules.claude.claude_adapter import (
-        ClaudeEvent,
-        claude_event_to_notification,
-    )
-
+def test_permission_request_maps_waiting() -> None:
     request = claude_event_to_notification(
         ClaudeEvent(
             session_id="claude-session-3",
-            session_name="review",
-            event_name="PermissionRequest",
-            summary="allow command",
+            hook_event_name="PermissionRequest",
+            message="allow command",
         )
     )
 
     assert request.detection.status is TaskStatus.WAITING_FOR_INPUT
-    assert "claude" in request.detection.tags
+    assert "waiting_for_input" in request.detection.tags
 
 
-def test_claude_permission_request_keeps_explicit_waiting_tag() -> None:
-    from lark_bot.modules.claude.claude_adapter import (
-        ClaudeEvent,
-        claude_event_to_notification,
-    )
-
-    request = claude_event_to_notification(
-        ClaudeEvent(
-            session_id="claude-session-waiting",
-            session_name="review",
-            event_name="PermissionRequest",
-            summary="Approval required before continuing",
-        )
-    )
-
-    assert request.detection.tags == [
-        "claude",
-        "PermissionRequest",
-        "waiting_for_input",
-    ]
-    assert request.detection.matched_phrases == ["Approval"]
-
-
-def test_claude_adapter_rejects_unsupported_hook_event() -> None:
-    from lark_bot.modules.claude.claude_adapter import (
-        ClaudeEvent,
-        claude_event_to_notification,
-    )
-
+def test_unknown_hook_event_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unsupported Claude event"):
         claude_event_to_notification(
-            ClaudeEvent(
-                session_id="claude-session-4",
-                session_name="bad",
-                event_name="UnknownEvent",
-            )
+            ClaudeEvent(session_id="claude-session-4", hook_event_name="UnknownEvent")
         )
 
 
-def test_build_claude_notification_from_json_accepts_hook_aliases() -> None:
-    from lark_bot.modules.claude.claude_service import build_claude_notification_from_json
-
+def test_hook_aliases_are_accepted_but_synthetic_fields_are_ignored() -> None:
     request = build_claude_notification_from_json(
         json.dumps(
             {
                 "sessionId": "claude-session-5",
-                "name": "aliases",
-                "hook_event_name": "Stop",
-                "status": "completed",
-                "stdout_tail": ["done"],
+                "event_name": "Stop",
+                "status": "failed",
+                "output_tail": ["should not be used"],
             }
         )
     )
 
     assert request.context is not None
     assert request.context.session_id == "claude-session-5"
-    assert request.task.stdout_tail == ["done"]
+    assert request.detection.status is TaskStatus.COMPLETED
+    assert request.task.stdout_tail == []
 
 
 def test_claude_event_cli_uses_shared_notification_sender(monkeypatch) -> None:
@@ -139,9 +88,7 @@ def test_claude_event_cli_uses_shared_notification_sender(monkeypatch) -> None:
         input=json.dumps(
             {
                 "session_id": "claude-session-6",
-                "session_name": "cli",
-                "event_name": "Stop",
-                "status": "completed",
+                "hook_event_name": "Stop",
             }
         ),
     )

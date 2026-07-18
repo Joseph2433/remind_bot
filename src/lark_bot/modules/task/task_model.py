@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class TaskStatus(StrEnum):
     SUCCEEDED = "succeeded"
+    COMPLETED = "completed"
     FAILED = "failed"
     WAITING_FOR_INPUT = "waiting_for_input"
 

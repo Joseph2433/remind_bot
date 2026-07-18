@@ -36,7 +36,12 @@ def build_agent_notification(value: AgentNotificationInput) -> NotificationReque
             session_id=value.session_id,
             session_name=value.session_name or value.task_name,
         )
-    return NotificationRequest(task=task, detection=detection, context=context)
+    return NotificationRequest(
+        task=task,
+        detection=detection,
+        context=context,
+        event_id=value.event_id,
+    )
 
 
 def _build_detection(
@@ -60,7 +65,7 @@ def _build_detection(
             tags=dedupe_tags([*tags, *waiting_tags]),
             matched_phrases=detected.matched_phrases,
         )
-    if detected.status is TaskStatus.WAITING_FOR_INPUT:
+    if status is not TaskStatus.COMPLETED and detected.status is TaskStatus.WAITING_FOR_INPUT:
         return DetectionResult(
             status=TaskStatus.WAITING_FOR_INPUT,
             tags=dedupe_tags([*tags, *detected.tags]),
