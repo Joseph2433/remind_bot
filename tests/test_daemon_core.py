@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from lark_bot.codex.models import CodexSession, NotificationOutboxItem, SessionStatus
-from lark_bot.server.daemon import DaemonRuntime, create_daemon_app, ensure_daemon_token
+from lark_bot.config import Settings
+from lark_bot.modules.codex.codex_model import CodexSession, NotificationOutboxItem, SessionStatus
+from lark_bot.modules.agent.agent_model import AgentKind
+from lark_bot.server.daemon import DaemonRuntime, build_runtime, create_daemon_app, ensure_daemon_token
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
@@ -101,7 +103,7 @@ def _runtime(tmp_path: Path, interactive_manager=None):
     settings = SimpleNamespace(
         outbox_poll_seconds=0.01,
         interaction_expiry_poll_seconds=0.01,
-        notification_delay_seconds=5.0,
+        notification_delay_seconds=0.0,
         daemon_token_path=tmp_path / "token",
         message_format="card",
     )
@@ -182,12 +184,12 @@ def test_hook_endpoint_bounds_and_deduplicates(workspace_tmp_path):
         assert client.post("/api/v1/codex/hooks", headers=headers, json=payload).status_code == 202
         assert len(store.items) == 1 and "secret output" not in store.items[0].payload_summary
         assert store.items[0].created_at == NOW
-        assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
-        assert lark.messages == []
+        assert store.items[0].next_attempt_at == NOW
+        assert lark.messages == ["hook:Stop\nCodex hook Stop"]
         assert client.post("/api/v1/codex/hooks", headers=headers, content=b"x" * 65537).status_code == 413
 
 
-def test_spool_hook_uses_notification_delay(workspace_tmp_path):
+def test_spool_hook_is_available_immediately(workspace_tmp_path):
     runtime, store, *_ = _runtime(workspace_tmp_path)
     spool = workspace_tmp_path / "spool"
     spool.mkdir()
@@ -199,7 +201,7 @@ def test_spool_hook_uses_notification_delay(workspace_tmp_path):
     runtime._drain_spool()
 
     assert store.items[0].created_at == NOW
-    assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
+    assert store.items[0].next_attempt_at == NOW
 
 
 def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
@@ -229,6 +231,54 @@ def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
         )
         assert store.closed and lark.closed
     asyncio.run(scenario())
+
+
+def test_runtime_renders_session_identity(workspace_tmp_path):
+    runtime, store, _, _, _ = _runtime(workspace_tmp_path)
+    store.sessions["session-1"] = CodexSession(
+        id="session-1",
+        name="build",
+        cwd=".",
+        sandbox="workspace-write",
+        status=SessionStatus.RUNNING,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    rendered = runtime._render(
+        SimpleNamespace(
+            notification_type="orchestrator:turn_completed",
+            payload_summary="done",
+            interaction_id=None,
+            session_id="session-1",
+            agent="codex",
+            session_name="build",
+        )
+    )
+
+    assert "codex / build [session-]" in rendered.content["body"]["elements"][0]["content"]
+
+
+def test_build_runtime_registers_codex_and_claude_on_one_bot(workspace_tmp_path):
+    settings = Settings(
+        sqlite_path=workspace_tmp_path / "runtime.sqlite3",
+        daemon_token_path=workspace_tmp_path / "daemon.token",
+        lark_app_id="app",
+        lark_app_secret="secret",
+        lark_receive_id="chat",
+    )
+    runtime = build_runtime(settings)
+
+    try:
+        assert runtime.agent_registry is not None
+        assert runtime.agent_registry.registered() == (
+            AgentKind.CODEX,
+            AgentKind.CLAUDE,
+        )
+        assert runtime.agent_registry.get(AgentKind.CODEX).orchestrator is runtime.orchestrator
+        assert runtime.lark_client.receive_id == "chat"
+    finally:
+        asyncio.run(runtime.close())
 
 
 def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp_path):
@@ -291,7 +341,7 @@ def test_runtime_retries_expiry_after_safe_degradation(workspace_tmp_path):
         assert any(
             item.notification_type == "runtime:degraded"
             and item.payload_summary == "Interaction expiry unavailable (RuntimeError)"
-            and item.next_attempt_at == NOW + timedelta(seconds=5)
+            and item.next_attempt_at == NOW
             for item in store.items
         )
         await runtime.close()

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from lark_bot.codex.probe import (
+from lark_bot.modules.codex.codex_probe import (
     ProbeResult,
     _default_version_reader,
     _rpc,
@@ -624,7 +624,7 @@ def test_default_version_reader_forces_utf8_decoding(monkeypatch: Any) -> None:
         calls.append((args, kwargs))
         return Completed()
 
-    monkeypatch.setattr("lark_bot.codex.probe.subprocess.run", fake_run)
+    monkeypatch.setattr("lark_bot.modules.codex.codex_probe.subprocess.run", fake_run)
 
     result = _default_version_reader("C:/tools/codex.exe")
 

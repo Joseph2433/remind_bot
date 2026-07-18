@@ -1,9 +1,10 @@
 import json
 
-from lark_bot.codex.models import InteractionKind
-from lark_bot.lark.messages import build_api_payload, build_interactive_message, interactive_card
-from lark_bot.lark.render import render_outbox_notification, render_task_notification
-from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.modules.codex.codex_model import InteractionKind
+from lark_bot.modules.lark.lark_message import build_api_payload, build_interactive_message, interactive_card
+from lark_bot.modules.lark.lark_render import render_outbox_notification, render_task_notification
+from lark_bot.models import DetectionResult, NotificationContext, NotificationRequest, TaskResult, TaskStatus
+from lark_bot.modules.agent.agent_model import AgentKind, SessionDisplay
 
 
 def _request(**kwargs) -> NotificationRequest:
@@ -80,6 +81,45 @@ def test_task_text_format_neutralizes_lark_mentions():
     rendered = render_task_notification(request, message_format="text", tail_lines=5)
 
     assert "&#60;at id=all&#62;&#60;/at&#62;" in rendered.content["text"]
+
+
+def test_task_card_and_text_include_session_identity() -> None:
+    request = _request().model_copy(
+        update={
+            "context": NotificationContext(
+                agent=AgentKind.CLAUDE,
+                session_id="abcdef123456789",
+                session_name="docs",
+            )
+        }
+    )
+
+    card = render_task_notification(request, message_format="card")
+    text = render_task_notification(request, message_format="text")
+
+    assert "claude / docs [abcdef12]" in card.content["body"]["elements"][0]["content"]
+    assert "claude / docs [abcdef12]" in text.content["text"]
+
+
+def test_outbox_card_includes_session_identity() -> None:
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": "done",
+            "interaction_id": None,
+        },
+    )()
+    display = SessionDisplay(
+        agent=AgentKind.CODEX,
+        session_id="abcdef123456789",
+        session_name="build",
+    )
+
+    rendered = render_outbox_notification(item, session=display)
+
+    assert "codex / build [abcdef12]" in rendered.content["body"]["elements"][0]["content"]
 
 
 def test_outbox_approval_card_includes_instructions():

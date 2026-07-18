@@ -4,15 +4,15 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from lark_bot.codex.models import InteractionKind
-from lark_bot.lark.connection import LarkLongConnection, decode_child_event
-from lark_bot.lark.events import (
+from lark_bot.modules.codex.codex_model import InteractionKind
+from lark_bot.modules.lark.lark_connection import LarkLongConnection, decode_child_event
+from lark_bot.modules.lark.lark_event import (
     LarkMessageEvent,
     LarkReactionEvent,
     normalize_message_event,
     normalize_reaction_event,
 )
-from lark_bot.lark.router import LarkControlRouter
+from lark_bot.modules.lark.lark_router import LarkControlRouter
 
 
 def run(coro):

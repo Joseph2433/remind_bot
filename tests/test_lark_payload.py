@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
-from lark_bot.lark.client import LarkAPIError, LarkBotClient, build_text_message
+from lark_bot.modules.lark.lark_client import LarkAPIError, LarkBotClient, build_text_message
 
 
 def test_build_text_message_uses_receive_id_and_json_content():

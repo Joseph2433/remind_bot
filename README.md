@@ -58,7 +58,7 @@ LARK_BOT_CODEX_PATH=codex
 LARK_BOT_INTERACTION_TIMEOUT_SECONDS=1800
 LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
 LARK_BOT_OUTBOX_POLL_SECONDS=0.5
-LARK_BOT_NOTIFICATION_DELAY_SECONDS=5.0
+LARK_BOT_NOTIFICATION_DELAY_SECONDS=0.0
 LARK_BOT_LARK_EVENT_QUEUE_CAPACITY=100
 LARK_BOT_MESSAGE_FORMAT=card
 ```
@@ -83,6 +83,13 @@ Send a Codex event from a JSON file or stdin:
 ```bash
 lark-bot codex-event --file codex-event.json
 Get-Content codex-event.json | lark-bot codex-event
+```
+
+Send a Claude Code Hook event through the same notification path:
+
+```bash
+lark-bot claude-event --file claude-event.json
+Get-Content claude-event.json | lark-bot claude-event
 ```
 
 Example Codex event payload:
@@ -149,7 +156,7 @@ The installed Codex app-server accepts a secondary picker client and lets it lis
 
 The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
-All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+Lark notifications are sent immediately by default. Set `LARK_BOT_NOTIFICATION_DELAY_SECONDS` to a positive value when a delay is needed. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
 
 If the daemon is intentionally unavailable, launch Codex without any Lark callback or gateway:
 
@@ -228,16 +235,17 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 
 Implementation modules are grouped by functional ownership under `src/lark_bot/`:
 
-- `commands/`: Typer command composition, Codex argument parsing, and shared CLI helpers.
-- `tasks/`: subprocess execution and output-status detection.
-- `notifications/`: notification interfaces and agent event adapters.
-- `lark/`: Lark OpenAPI client, inbound event normalization, reply routing, and long connection.
-- `codex/`: Codex domain models, app-server transport, gateway, TUI integration, hooks, probes, and orchestration.
-- `storage/codex/`: Codex SQLite store, versioned schema, and row mapping.
-- `server/daemon/`: authenticated daemon API, token handling, and runtime exports.
+- `core/`: configuration, logging, and redaction infrastructure.
+- `modules/agent/`: shared Agent/session/event contracts, per-session serialization, and provider registry.
+- `modules/task/`: subprocess execution and output-status detection.
+- `modules/notification/`: notification models, dedupe send service, and storage protocol.
+- `modules/lark/`: Lark OpenAPI client, inbound event normalization, reply routing, rendering, and long connection.
+- `modules/codex/`: Codex models, app-server transport, gateway, TUI, hooks, orchestration, and SQLite persistence.
+- `modules/claude/`: Claude Code Hook/event models, adapter, service, and CLI integration.
+- `server/daemon/`: authenticated daemon API, shared Bot runtime, provider registry composition, and workers.
 - `server/`: public FastAPI event callback endpoints.
 
-The package root contains only executable entry points and genuinely shared contracts: `cli.py`, `config.py`, `models.py`, and `redaction.py`.
+The daemon owns one Lark Bot client and can serve multiple independent Codex or Claude sessions. Each session has a stable `session_id`; interactive Lark replies resolve through `lark_message_id` to the corresponding interaction and session. Notifications display the agent, session name, and a short session ID. Provider and capability imports use the canonical `lark_bot.modules.*` namespace. The former `lark_bot.codex.*`, `lark_bot.lark.*`, `lark_bot.tasks.*`, `lark_bot.notifications.*`, and `lark_bot.storage.codex.*` namespaces were intentionally removed in this breaking import-path change.
 
 ## Security Notes
 

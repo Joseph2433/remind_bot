@@ -13,16 +13,20 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
-from lark_bot.codex.interactive import InteractiveSessionManager
-from lark_bot.codex.models import CodexSession, SessionStatus
-from lark_bot.codex.orchestration import CodexOrchestrator
-from lark_bot.lark.client import LarkBotClient
-from lark_bot.lark.connection import LarkLongConnection
-from lark_bot.lark.messages import MessageFormat, RenderedMessage
-from lark_bot.lark.render import render_outbox_notification
-from lark_bot.lark.router import LarkControlRouter
-from lark_bot.storage.codex import SQLiteCodexStore
+from lark_bot.modules.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
+from lark_bot.modules.codex.codex_interactive import InteractiveSessionManager
+from lark_bot.modules.codex.codex_model import CodexSession, SessionStatus
+from lark_bot.modules.codex.codex_orchestrator import CodexOrchestrator
+from lark_bot.modules.codex.codex_service import CodexService
+from lark_bot.modules.claude.claude_service import ClaudeService
+from lark_bot.modules.agent.agent_service import AgentRegistry
+from lark_bot.modules.agent.agent_model import AgentKind, SessionDisplay
+from lark_bot.modules.lark.lark_client import LarkBotClient
+from lark_bot.modules.lark.lark_connection import LarkLongConnection
+from lark_bot.modules.lark.lark_message import MessageFormat, RenderedMessage
+from lark_bot.modules.lark.lark_render import render_outbox_notification
+from lark_bot.modules.lark.lark_router import LarkControlRouter
+from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
 
@@ -61,10 +65,11 @@ def _public_session(session: CodexSession) -> dict[str, Any]:
 
 
 class DaemonRuntime:
-    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any, *, interactive_manager: Any | None = None, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, settings: Any, store: Any, orchestrator: Any, lark_client: Any, long_connection: Any, control_router: Any, *, interactive_manager: Any | None = None, agent_registry: AgentRegistry | None = None, now: Callable[[], datetime] | None = None) -> None:
         self.settings, self.store, self.orchestrator = settings, store, orchestrator
         self.lark_client, self.long_connection, self.control_router = lark_client, long_connection, control_router
         self.interactive_manager = interactive_manager
+        self.agent_registry = agent_registry
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._tasks: list[asyncio.Task[None]] = []
         self._closed = False
@@ -73,7 +78,11 @@ class DaemonRuntime:
     async def start(self) -> None:
         try:
             self._drain_spool()
-            await self.orchestrator.start()
+            if self.agent_registry is None:
+                await self.orchestrator.start()
+            else:
+                for agent in self.agent_registry.registered():
+                    await self.agent_registry.get(agent).start()
             if self.interactive_manager is not None:
                 await self.interactive_manager.start()
             await self.long_connection.start()
@@ -186,6 +195,16 @@ class DaemonRuntime:
             getter = getattr(self.store, "get_interaction", None)
             if getter is not None and item.interaction_id:
                 interaction = getter(item.interaction_id)
+        session_display = None
+        session_id = getattr(item, "session_id", None)
+        if session_id:
+            session = self.store.get_session(session_id)
+            if session is not None:
+                session_display = SessionDisplay(
+                    session_id=session_id,
+                    session_name=session.name,
+                    agent=getattr(item, "agent", None) or AgentKind.CODEX,
+                )
         message_format: MessageFormat = getattr(self.settings, "message_format", "card")
         if message_format not in {"card", "text"}:
             message_format = "card"
@@ -193,6 +212,7 @@ class DaemonRuntime:
             item,
             message_format=message_format,
             interaction=interaction,
+            session=session_display,
         )
 
     async def close(self) -> None:
@@ -203,7 +223,10 @@ class DaemonRuntime:
         closes = [self.long_connection.close]
         if self.interactive_manager is not None:
             closes.append(self.interactive_manager.close)
-        closes.append(self.orchestrator.close)
+        if self.agent_registry is None:
+            closes.append(self.orchestrator.close)
+        else:
+            closes.extend(self.agent_registry.get(agent).close for agent in self.agent_registry.registered())
         for close in closes:
             try: await close()
             except BaseException: pass
@@ -330,6 +353,9 @@ def build_runtime(settings: Any) -> DaemonRuntime:
         orchestrator,
         codex_path=settings.codex_path,
     )
+    agent_registry = AgentRegistry()
+    agent_registry.register(CodexService(orchestrator))
+    agent_registry.register(ClaudeService())
     return DaemonRuntime(
         settings,
         store,
@@ -338,4 +364,5 @@ def build_runtime(settings: Any) -> DaemonRuntime:
         connection,
         LarkControlRouter(store, orchestrator),
         interactive_manager=interactive_manager,
+        agent_registry=agent_registry,
     )

@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lark_bot.codex.app_server import ServerNotification, ServerRequest
-from lark_bot.codex.models import InteractionKind, InteractionStatus, SessionStatus
-from lark_bot.codex.orchestration import (
+from lark_bot.modules.codex.app_server import ServerNotification, ServerRequest
+from lark_bot.modules.codex.codex_model import InteractionKind, InteractionStatus, SessionStatus
+from lark_bot.modules.codex.orchestration import (
     CodexOrchestrator,
     OrchestratorEventType,
 )
-from lark_bot.storage.codex import SQLiteCodexStore
+from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc)
@@ -158,11 +158,10 @@ def test_create_session_persists_state_without_prompt_and_emits_started():
         assert app.thread_calls == [("C:/workspace", "gpt", "read-only")]
         assert app.turn_calls == [("thread-1", "secret prompt")]
         persisted = store.get_session("session-1")
-        assert store.list_due_outbox(now=NOW + timedelta(seconds=4), limit=10) == []
-        delayed = store.list_due_outbox(now=NOW + timedelta(seconds=5), limit=10)
-        assert len(delayed) == 1
-        assert delayed[0].created_at == NOW
-        assert delayed[0].next_attempt_at == NOW + timedelta(seconds=5)
+        immediate = store.list_due_outbox(now=NOW, limit=10)
+        assert len(immediate) == 1
+        assert immediate[0].created_at == NOW
+        assert immediate[0].next_attempt_at == NOW
         assert "secret prompt" not in persisted.model_dump_json()
         event = orchestrator.events.get_nowait()
         assert event.event_type is OrchestratorEventType.SESSION_STARTED
@@ -930,7 +929,7 @@ def test_expired_user_input_is_marked_interrupted_even_if_interrupt_rpc_fails():
 def test_start_reconciles_before_consumers_and_is_idempotent():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator()
-        from lark_bot.codex.models import CodexSession
+        from lark_bot.modules.codex.codex_model import CodexSession
         store.create_session(CodexSession(
             id="old", name="old", cwd="C:/old", sandbox="workspace-write",
             status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW,
@@ -952,13 +951,12 @@ def test_startup_reconciliation_never_blocks_when_hint_queue_is_full():
     async def scenario():
         store = SQLiteCodexStore(":memory:")
         app = FakeAppServer()
-        from lark_bot.codex.models import CodexSession
+        from lark_bot.modules.codex.codex_model import CodexSession
         for session_id in ("old-1", "old-2"):
             store.create_session(CodexSession(id=session_id, name="old", cwd="C:/old", sandbox="workspace-write", status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW))
         orchestrator = CodexOrchestrator(store, app, now=Clock(), id_factory=IdFactory(), event_queue_capacity=1)
         await asyncio.wait_for(orchestrator.start(), timeout=1)
-        assert store.list_due_outbox(now=NOW, limit=10) == []
-        assert len(store.list_due_outbox(now=NOW + timedelta(seconds=5), limit=10)) == 2
+        assert len(store.list_due_outbox(now=NOW, limit=10)) == 2
         await orchestrator.close()
 
     run(scenario())
