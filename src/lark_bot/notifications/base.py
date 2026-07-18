@@ -1,10 +1,5 @@
-from __future__ import annotations
+"""Backward-compatible notification contract import path."""
 
-from typing import Protocol
+from lark_bot.modules.notification.notification_base import Notifier
 
-from lark_bot.models import NotificationRequest
-
-
-class Notifier(Protocol):
-    def send(self, request: NotificationRequest) -> None:
-        """Send a notification request."""
+__all__ = ["Notifier"]
