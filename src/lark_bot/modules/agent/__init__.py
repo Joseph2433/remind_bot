@@ -6,15 +6,19 @@ from lark_bot.modules.agent.agent_hook import (
     read_callback_stdin,
 )
 from lark_bot.modules.agent.agent_model import (
+    AgentAuditEntry,
     AgentInteraction,
     AgentKind,
     AgentSession,
+    AgentNotification,
     InteractionKind,
     InteractionStatus,
     SessionDisplay,
     SessionRef,
     SessionStatus,
+    StartupReconciliationResult,
 )
+from lark_bot.modules.agent.agent_store import SQLiteAgentStore
 from lark_bot.modules.agent.agent_protocol import AgentAdapter
 from lark_bot.modules.agent.agent_service import AgentRegistry, AgentSessionService
 
@@ -22,16 +26,20 @@ __all__ = [
     "AgentAdapter",
     "AgentEvent",
     "AgentInteraction",
+    "AgentAuditEntry",
     "AgentKind",
     "AgentRegistry",
     "AgentSession",
     "AgentSessionService",
+    "AgentNotification",
+    "SQLiteAgentStore",
     "InteractionKind",
     "InteractionStatus",
     "MAX_HOOK_BYTES",
     "SessionDisplay",
     "SessionRef",
     "SessionStatus",
+    "StartupReconciliationResult",
     "deliver_sanitized_hook",
     "parse_bounded_json_object",
     "parse_event_payload",
