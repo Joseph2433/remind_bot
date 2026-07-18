@@ -463,6 +463,145 @@ def test_persistent_link_failure_for_missing_target_is_safe_and_clean(
     assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
 
 
+def test_restore_exclusive_create_preserves_concurrently_created_user_file(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"permissions":{"allow":["Read"]}}'
+    user_update = b'{"permissions":{"deny":["Write"]}}'
+    settings.write_bytes(original)
+    real_link = installer.os.link
+    real_open = installer.os.open
+    link_calls = 0
+
+    def fail_publish(source, destination, *args, **kwargs):
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 2:
+            raise OSError("publish unavailable")
+        return real_link(source, destination, *args, **kwargs)
+
+    def create_user_before_restore(path, flags, *args, **kwargs):
+        if flags & os.O_EXCL and Path(path).name == settings.name:
+            settings.write_bytes(user_update)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(installer.os, "link", fail_publish)
+    monkeypatch.setattr(installer.os, "open", create_user_before_restore)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "unable to publish settings"
+    assert settings.read_bytes() == user_update
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_restore_recreates_exact_original_bytes_without_artifacts(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"permissions":{"allow":["Read"]}}'
+    settings.write_bytes(original)
+    real_link = installer.os.link
+    link_calls = 0
+
+    def fail_publish(source, destination, *args, **kwargs):
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 2:
+            raise OSError("publish unavailable")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(installer.os, "link", fail_publish)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_hardlink_probe_failure_does_not_move_existing_target(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"permissions":{"allow":["Read"]}}'
+    settings.write_bytes(original)
+    real_replace = installer.os.replace
+    replace_calls: list[tuple[object, object]] = []
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError("hard links unsupported")
+
+    def track_replace(source, destination, *args, **kwargs):
+        replace_calls.append((source, destination))
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(installer.os, "link", unsupported_link)
+    monkeypatch.setattr(installer.os, "replace", track_replace)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "unable to publish settings"
+    assert settings.read_bytes() == original
+    assert replace_calls == []
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_partial_restore_write_retains_backup_and_removes_partial_target(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"permissions":{"allow":["Read"]}}'
+    settings.write_bytes(original)
+    real_link = installer.os.link
+    real_open = installer.os.open
+    real_write = installer.os.write
+    link_calls = 0
+    restore_fds: set[int] = set()
+
+    def fail_publish(source, destination, *args, **kwargs):
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 2:
+            raise OSError("publish unavailable")
+        return real_link(source, destination, *args, **kwargs)
+
+    def track_restore_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if flags & os.O_EXCL and Path(path).name == settings.name:
+            restore_fds.add(fd)
+        return fd
+
+    def fail_partial_write(fd: int, data: bytes) -> int:
+        if fd in restore_fds:
+            real_write(fd, data[:1])
+            raise OSError("partial restore failure")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(installer.os, "link", fail_publish)
+    monkeypatch.setattr(installer.os, "open", track_restore_open)
+    monkeypatch.setattr(installer.os, "write", fail_partial_write)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert not settings.exists()
+    backups = list(settings.parent.glob(f".{settings.name}.backup.*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
 def test_install_does_not_remove_unknown_backup_file(workspace_tmp_path: Path) -> None:
     settings_dir = workspace_tmp_path / ".claude"
     settings_dir.mkdir()

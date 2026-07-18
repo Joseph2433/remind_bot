@@ -311,17 +311,146 @@ def _unlink_known(path: Path, parent_fd: int | None) -> None:
         pass
 
 
+def _probe_hardlink_support(path: Path, parent_fd: int | None) -> bool:
+    probe_fd, probe_name = tempfile.mkstemp(
+        prefix=f".{path.name}.link-probe.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    os.close(probe_fd)
+    source = Path(probe_name)
+    destination = source.with_name(f"{source.name}.linked")
+    linked = False
+    try:
+        try:
+            linked = _link_no_overwrite(source, destination, parent_fd)
+        except OSError:
+            return False
+        return linked
+    finally:
+        _unlink_known(source, parent_fd)
+        if linked:
+            _unlink_known(destination, parent_fd)
+
+
+def _read_backup(backup: Path, parent_fd: int | None) -> tuple[bytes, int] | None:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = (
+            os.open(backup.name, flags, dir_fd=parent_fd)
+            if parent_fd is not None
+            else os.open(backup, flags)
+        )
+    except OSError:
+        return None
+    try:
+        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), mode
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _current_identity(path: Path, parent_fd: int | None) -> tuple[int, int, int, int, int, int] | None:
+    try:
+        result = (
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if parent_fd is not None
+            else os.lstat(path)
+        )
+    except OSError:
+        return None
+    return _target_identity_from_stat(result)
+
+
+def _same_created_file(
+    current: tuple[int, int, int, int, int, int] | None,
+    created: tuple[int, int, int, int, int, int],
+) -> bool:
+    return current is not None and (
+        current[0],
+        current[1],
+        stat.S_IFMT(current[2]),
+        current[3],
+    ) == (
+        created[0],
+        created[1],
+        stat.S_IFMT(created[2]),
+        created[3],
+    )
+
+
+def _remove_partial_restore(
+    destination: Path,
+    created: tuple[int, int, int, int, int, int],
+    parent_fd: int | None,
+) -> None:
+    if _same_created_file(_current_identity(destination, parent_fd), created):
+        _unlink_known(destination, parent_fd)
+
+
 def _restore_backup(backup: Path, destination: Path, parent_fd: int | None) -> bool:
     if not _target_matches(destination, _missing_snapshot(), parent_fd):
         _unlink_known(backup, parent_fd)
         return True
+    backup_content = _read_backup(backup, parent_fd)
+    if backup_content is None:
+        return False
+    raw, original_mode = backup_content
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    created: tuple[int, int, int, int, int, int] | None = None
     try:
-        _replace_in_parent(backup, destination, parent_fd)
-    except OSError:
-        if not _target_matches(destination, _missing_snapshot(), parent_fd):
+        try:
+            fd = (
+                os.open(destination.name, flags, 0o600, dir_fd=parent_fd)
+                if parent_fd is not None
+                else os.open(destination, flags, 0o600)
+            )
+        except FileExistsError:
             _unlink_known(backup, parent_fd)
             return True
+        except OSError:
+            return False
+        created = _target_identity_from_stat(os.fstat(fd))
+        offset = 0
+        while offset < len(raw):
+            written = os.write(fd, raw[offset:])
+            if written <= 0:
+                raise OSError("restore write failed")
+            offset += written
+        try:
+            os.fchmod(fd, original_mode)
+        except (AttributeError, OSError):
+            pass
+        os.fsync(fd)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+            fd = None
+        if created is not None:
+            _remove_partial_restore(destination, created, parent_fd)
         return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+    restored = (
+        _snapshot_from_dir_fd(destination.name, parent_fd)
+        if parent_fd is not None
+        else _snapshot_from_path(destination)
+    )
+    if restored is None or restored.digest != hashlib.sha256(raw).hexdigest():
+        if created is not None:
+            _remove_partial_restore(destination, created, parent_fd)
+        return False
+    _unlink_known(backup, parent_fd)
     return True
 
 
@@ -370,6 +499,8 @@ def _write_atomic(
             raise ValueError("Claude Hook settings directory changed")
 
         if target_snapshot.exists:
+            if not _probe_hardlink_support(path, parent_fd):
+                return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
             backup_fd, backup_name = tempfile.mkstemp(
                 prefix=f".{path.name}.backup.",
                 suffix=".bak",
