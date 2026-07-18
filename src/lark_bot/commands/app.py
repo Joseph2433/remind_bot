@@ -13,6 +13,7 @@ import uvicorn
 from typer.core import TyperGroup
 
 from lark_bot.config import build_config_checks, get_settings, public_settings_summary
+from lark_bot.modules.claude.claude_service import build_claude_notification_from_json
 from lark_bot.modules.codex.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
 from lark_bot.modules.codex.codex_tui import CodexTuiLauncher, CodexTuiOptions
 from lark_bot.tasks.detector import detect_output
@@ -167,6 +168,32 @@ def codex_event(
     payload = file.read_text(encoding="utf-8") if file else sys.stdin.read()
     try:
         request = build_codex_notification_from_json(payload)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    _send_with_dedupe(request, settings)
+
+
+@app.command("claude-event")
+def claude_event(
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Read a Claude event JSON object from a file. Defaults to stdin.",
+    )
+) -> None:
+    """Send a notification from a Claude Code Hook/event JSON payload."""
+
+    payload = file.read_text(encoding="utf-8") if file else sys.stdin.read()
+    try:
+        request = build_claude_notification_from_json(payload)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
