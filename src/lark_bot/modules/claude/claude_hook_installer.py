@@ -373,8 +373,9 @@ def _atomic_restore_existing(
                 raise _ConcurrentTargetChange
             os.replace(recovery, canonical)
         except OSError:
-            _unlink_known(recovery, None)
             return None
+        finally:
+            _unlink_known(recovery, None)
         return backup
     return backup if _posix_exchange(canonical, backup, parent_fd) else None
 

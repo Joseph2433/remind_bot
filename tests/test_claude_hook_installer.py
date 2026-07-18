@@ -609,6 +609,47 @@ def test_atomic_restore_never_exposes_missing_or_partial_canonical(
     assert list(settings.parent.glob(f".{settings.name}.recovery.*.tmp")) == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows recovery snapshot race")
+def test_atomic_restore_cleans_recovery_when_second_snapshot_detects_user_change(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    published = b'{"hooks":{"Stop":[]}}'
+    original = b'{"permissions":{"allow":["Read"]}}'
+    user = b'{"permissions":{"deny":["Write"]}}'
+    settings.write_bytes(published)
+    backup = settings.with_name(f".{settings.name}.backup.test.bak")
+    backup.write_bytes(original)
+    real_snapshot = installer._snapshot_from_path
+    canonical_snapshots = 0
+
+    def race_on_second_snapshot(path: Path):
+        nonlocal canonical_snapshots
+        if path == settings:
+            canonical_snapshots += 1
+            if canonical_snapshots == 2:
+                user_temp = settings.with_name("user-race.tmp")
+                user_temp.write_bytes(user)
+                os.replace(user_temp, settings)
+        return real_snapshot(path)
+
+    monkeypatch.setattr(installer, "_snapshot_from_path", race_on_second_snapshot)
+
+    with pytest.raises(installer._ConcurrentTargetChange):
+        installer._atomic_restore_existing(
+            settings,
+            backup,
+            None,
+            hashlib.sha256(published).hexdigest(),
+        )
+
+    assert canonical_snapshots == 2
+    assert settings.read_bytes() == user
+    assert backup.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.recovery.*.tmp")) == []
+
+
 def test_install_does_not_remove_unknown_backup_file(workspace_tmp_path: Path) -> None:
     settings_dir = workspace_tmp_path / ".claude"
     settings_dir.mkdir()
