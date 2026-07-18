@@ -80,6 +80,37 @@ def test_uninstall_prunes_empty_owned_matcher_group(workspace_tmp_path: Path) ->
     assert json.loads(settings.read_text(encoding="utf-8")) == {}
 
 
+def test_uninstall_prunes_empty_managed_event_and_top_level_hooks(workspace_tmp_path: Path) -> None:
+    tmp_path = workspace_tmp_path
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(
+        json.dumps({"permissions": {"allow": ["Read"]}, "hooks": {"Stop": [], "UserPromptSubmit": []}}),
+        encoding="utf-8",
+    )
+
+    result = uninstall_hooks(tmp_path)
+
+    assert result.status == "missing"
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "permissions": {"allow": ["Read"]},
+        "hooks": {"UserPromptSubmit": []},
+    }
+
+
+def test_uninstall_absent_settings_is_idempotent_without_creating_file(workspace_tmp_path: Path) -> None:
+    tmp_path = workspace_tmp_path
+    settings = tmp_path / ".claude" / "settings.json"
+
+    first = uninstall_hooks(tmp_path)
+    second = uninstall_hooks(tmp_path)
+
+    assert first.status == "missing"
+    assert second.status == "missing"
+    assert not settings.exists()
+    assert not settings.parent.exists()
+
+
 def test_malformed_json_is_unchanged_and_reported(workspace_tmp_path: Path) -> None:
     tmp_path = workspace_tmp_path
     settings = tmp_path / ".claude" / "settings.json"

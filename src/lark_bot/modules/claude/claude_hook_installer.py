@@ -226,11 +226,12 @@ def uninstall_hooks(project: str | Path) -> HookCheck:
                 kept_groups.append(updated)
         if kept_groups:
             hooks[event] = kept_groups
-        elif groups:
+        else:
             hooks.pop(event, None)
             changed = True
-    if not hooks:
+    if not hooks and "hooks" in value:
         value.pop("hooks", None)
+        changed = True
     if changed:
         _write_atomic(path, value)
     return check_hooks(project)
