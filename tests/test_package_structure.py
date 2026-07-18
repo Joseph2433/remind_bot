@@ -85,7 +85,7 @@ def test_lark_modules_separate_client_routing_and_connection() -> None:
 def test_codex_storage_package_exports_store_and_schema_tables() -> None:
     module = import_module("lark_bot.storage.codex")
     store_type = module.SQLiteCodexStore
-    assert store_type.__module__ == "lark_bot.storage.codex.store"
+    assert store_type.__module__ == "lark_bot.modules.codex.codex_store"
 
     with store_type(":memory:") as store:
         with store._connection() as connection:

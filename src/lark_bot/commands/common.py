@@ -12,7 +12,7 @@ from lark_bot.modules.notification.notification_service import (
     send_with_dedupe,
     validate_lark_settings,
 )
-from lark_bot.notifications.adapters.codex import CodexEvent, codex_event_to_notification
+from lark_bot.modules.codex.codex_adapter import CodexEvent, codex_event_to_notification
 
 
 def build_codex_notification_from_json(payload: str) -> NotificationRequest:

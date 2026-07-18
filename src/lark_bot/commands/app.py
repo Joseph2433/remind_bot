@@ -13,11 +13,11 @@ import uvicorn
 from typer.core import TyperGroup
 
 from lark_bot.config import build_config_checks, get_settings, public_settings_summary
-from lark_bot.codex.hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
-from lark_bot.codex.tui import CodexTuiLauncher, CodexTuiOptions
+from lark_bot.modules.codex.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
+from lark_bot.modules.codex.codex_tui import CodexTuiLauncher, CodexTuiOptions
 from lark_bot.tasks.detector import detect_output
 from lark_bot.server.daemon import build_runtime, create_daemon_app, ensure_daemon_token
-from lark_bot.codex.hooks import check_hooks, install_hooks, uninstall_hooks
+from lark_bot.modules.codex.codex_hook import check_hooks, install_hooks, uninstall_hooks
 from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
 from lark_bot.tasks.runner import run_command
 from lark_bot.commands.codex_args import uses_remote_resume_picker as _uses_remote_resume_picker

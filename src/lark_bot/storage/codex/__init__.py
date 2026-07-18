@@ -1,3 +1,5 @@
-from lark_bot.storage.codex.store import SQLiteCodexStore
+"""Compatibility package for the canonical Codex persistence module."""
+
+from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 __all__ = ["SQLiteCodexStore"]

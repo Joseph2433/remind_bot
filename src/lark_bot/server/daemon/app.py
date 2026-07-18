@@ -13,16 +13,16 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
-from lark_bot.codex.interactive import InteractiveSessionManager
-from lark_bot.codex.models import CodexSession, SessionStatus
-from lark_bot.codex.orchestration import CodexOrchestrator
+from lark_bot.modules.codex.app_server import CodexAppServerClient, ProcessExitedError, ServerRpcError
+from lark_bot.modules.codex.codex_interactive import InteractiveSessionManager
+from lark_bot.modules.codex.codex_model import CodexSession, SessionStatus
+from lark_bot.modules.codex.codex_orchestrator import CodexOrchestrator
 from lark_bot.modules.lark.lark_client import LarkBotClient
 from lark_bot.modules.lark.lark_connection import LarkLongConnection
 from lark_bot.modules.lark.lark_message import MessageFormat, RenderedMessage
 from lark_bot.modules.lark.lark_render import render_outbox_notification
 from lark_bot.modules.lark.lark_router import LarkControlRouter
-from lark_bot.storage.codex import SQLiteCodexStore
+from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
 

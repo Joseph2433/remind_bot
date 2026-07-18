@@ -1,4 +1,4 @@
-from lark_bot.codex.orchestration.events import OrchestratorEvent, OrchestratorEventType
-from lark_bot.codex.orchestration.service import CodexOrchestrator
+"""Compatibility package for canonical Codex orchestration modules."""
 
-__all__ = ["CodexOrchestrator", "OrchestratorEvent", "OrchestratorEventType"]
+from lark_bot.modules.codex.orchestration import *
+from lark_bot.modules.codex.orchestration import __all__
