@@ -17,6 +17,8 @@ class ClaudeEvent(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     message: str | None = Field(default=None, max_length=1000)
     error: str | None = Field(default=None, max_length=100)
+    tool_name: str | None = Field(default=None, max_length=100, exclude=True, repr=False)
+    tool_input: Any = Field(default=None, exclude=True, repr=False)
     stop_hook_active: bool | None = None
 
     @model_validator(mode="before")

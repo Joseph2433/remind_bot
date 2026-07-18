@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from lark_bot.core.redaction import redact_text
 from lark_bot.modules.agent.agent_model import AgentKind
@@ -20,9 +21,11 @@ _SUPPORTED_EVENTS = frozenset(
         "sessionend",
     }
 )
-_WAITING_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt", "agent_needs_input"})
+_WAITING_NOTIFICATION_TYPES = frozenset(
+    {"permission_prompt", "idle_prompt", "agent_needs_input", "elicitation_dialog"}
+)
 _COMPLETED_NOTIFICATION_TYPES = frozenset(
-    {"agent_completed", "auth_success", "elicitation_dialog", "task_completed", "info", "warning", "error"}
+    {"auth_success", "elicitation_complete", "elicitation_response", "agent_completed"}
 )
 _SUMMARY_LIMIT = 512
 
@@ -78,7 +81,7 @@ def _event_semantics(event: ClaudeEvent, event_name: str) -> tuple[TaskStatus, s
     if notification_type in _WAITING_NOTIFICATION_TYPES:
         return TaskStatus.WAITING_FOR_INPUT, notification_type, [notification_type]
     if notification_type in _COMPLETED_NOTIFICATION_TYPES:
-        semantic = "turn_completed" if notification_type in {"agent_completed", "task_completed"} else notification_type
+        semantic = "turn_completed" if notification_type == "agent_completed" else notification_type
         return TaskStatus.COMPLETED, semantic, [notification_type]
     raise ValueError(f"Unsupported Claude notification type: {event.notification_type!r}")
 
@@ -86,8 +89,24 @@ def _event_semantics(event: ClaudeEvent, event_name: str) -> tuple[TaskStatus, s
 def _event_id(event: ClaudeEvent, original_event_name: str) -> str:
     prompt = event.prompt_id or "-"
     discriminator = event.notification_type or event.source or event.reason or event.error or "-"
+    tool_digest = _tool_input_digest(event.tool_input)
+    if event.tool_name or tool_digest:
+        discriminator = f"{discriminator}|{event.tool_name or '-'}|{tool_digest}"
     payload = "|".join((event.session_id, prompt, original_event_name, discriminator))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _tool_input_digest(value: object) -> str:
+    if value is None:
+        return "-"
+    canonical = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _safe_text(value: str, *, limit: int) -> str:
