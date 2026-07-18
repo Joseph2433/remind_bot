@@ -102,7 +102,16 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_update
     AFTER UPDATE ON agent_sessions WHEN NEW.agent='codex' BEGIN
+      INSERT OR IGNORE INTO codex_sessions(id,thread_id,turn_id,name,cwd,model,sandbox,status,summary,created_at,updated_at)
+      VALUES(NEW.id,NEW.conversation_id,NEW.turn_id,NEW.name,NEW.cwd,NEW.model,NEW.sandbox,NEW.status,NEW.summary,NEW.created_at,NEW.updated_at);
       UPDATE codex_sessions SET thread_id=NEW.conversation_id,turn_id=NEW.turn_id,name=NEW.name,cwd=NEW.cwd,model=NEW.model,sandbox=NEW.sandbox,status=NEW.status,summary=NEW.summary,created_at=NEW.created_at,updated_at=NEW.updated_at WHERE id=NEW.id;
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_agent_change
+    AFTER UPDATE OF agent ON agent_sessions WHEN OLD.agent='codex' AND NEW.agent<>'codex' BEGIN
+      DELETE FROM notification_outbox WHERE session_id=OLD.id;
+      DELETE FROM codex_audit WHERE session_id=OLD.id;
+      DELETE FROM codex_interactions WHERE session_id=OLD.id;
+      DELETE FROM codex_sessions WHERE id=OLD.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_delete
     AFTER DELETE ON agent_sessions WHEN OLD.agent='codex' BEGIN
@@ -115,7 +124,13 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_update
     AFTER UPDATE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
+      INSERT OR IGNORE INTO codex_interactions(id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+      VALUES(NEW.id,NEW.session_id,NEW.request_id,NEW.kind,NEW.status,NEW.lark_message_id,NEW.payload_summary,NEW.requested_at,NEW.resolved_at,COALESCE(NEW.expires_at,NEW.requested_at),NEW.actor_id,NEW.decision);
       UPDATE codex_interactions SET request_id=NEW.request_id,kind=NEW.kind,status=NEW.status,lark_message_id=NEW.lark_message_id,payload_summary=NEW.payload_summary,requested_at=NEW.requested_at,resolved_at=NEW.resolved_at,expires_at=COALESCE(NEW.expires_at,NEW.requested_at),actor_id=NEW.actor_id,decision=NEW.decision WHERE id=NEW.id;
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_agent_change
+    AFTER UPDATE OF session_id ON agent_interactions WHEN OLD.session_id<>NEW.session_id AND (SELECT agent FROM agent_sessions WHERE id=OLD.session_id)='codex' BEGIN
+      DELETE FROM codex_interactions WHERE id=OLD.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_delete
     AFTER DELETE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=OLD.session_id)='codex' BEGIN
@@ -128,11 +143,26 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_outbox_codex_update
     AFTER UPDATE ON agent_notification_outbox WHEN NEW.agent='codex' BEGIN
+      INSERT OR IGNORE INTO notification_outbox(id,session_id,interaction_id,notification_type,payload_summary,attempt_count,next_attempt_at,sent_at,last_error,created_at,agent,session_name)
+      VALUES(NEW.id,NEW.session_id,CASE WHEN EXISTS(SELECT 1 FROM codex_interactions WHERE id=NEW.interaction_id) THEN NEW.interaction_id ELSE NULL END,NEW.notification_type,NEW.payload_summary,NEW.attempt_count,NEW.next_attempt_at,NEW.sent_at,NEW.last_error,NEW.created_at,NEW.agent,NEW.session_name);
       UPDATE notification_outbox SET session_id=NEW.session_id,interaction_id=NEW.interaction_id,notification_type=NEW.notification_type,payload_summary=NEW.payload_summary,attempt_count=NEW.attempt_count,next_attempt_at=NEW.next_attempt_at,sent_at=NEW.sent_at,last_error=NEW.last_error,created_at=NEW.created_at,agent=NEW.agent,session_name=NEW.session_name WHERE id=NEW.id;
     END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_outbox_codex_agent_change
+    AFTER UPDATE OF agent ON agent_notification_outbox WHEN OLD.agent='codex' AND NEW.agent<>'codex' BEGIN
+      DELETE FROM notification_outbox WHERE id=OLD.id;
+    END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_audit_codex_insert
-    AFTER INSERT ON agent_audit WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
+    AFTER INSERT ON agent_audit WHEN NEW.agent='codex' BEGIN
       INSERT OR IGNORE INTO codex_audit(id,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES(NEW.id,NEW.session_id,NEW.interaction_id,NEW.event_type,NEW.actor_id,NEW.detail_summary,NEW.created_at);
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_audit_codex_update
+    AFTER UPDATE ON agent_audit WHEN NEW.agent='codex' BEGIN
+      INSERT OR IGNORE INTO codex_audit(id,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES(NEW.id,NEW.session_id,NEW.interaction_id,NEW.event_type,NEW.actor_id,NEW.detail_summary,NEW.created_at);
+      UPDATE codex_audit SET session_id=NEW.session_id,interaction_id=NEW.interaction_id,event_type=NEW.event_type,actor_id=NEW.actor_id,detail_summary=NEW.detail_summary,created_at=NEW.created_at WHERE id=NEW.id;
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_audit_codex_agent_change
+    AFTER UPDATE OF agent ON agent_audit WHEN OLD.agent='codex' AND NEW.agent<>'codex' BEGIN
+      DELETE FROM codex_audit WHERE id=OLD.id;
     END;""",
 )
 
@@ -163,6 +193,24 @@ def _canonical_schema(connection: sqlite3.Connection) -> None:
 
 
 def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
+    for name in (
+        "trg_agent_dedupe_codex_insert",
+        "trg_agent_session_codex_insert",
+        "trg_agent_session_codex_update",
+        "trg_agent_session_codex_agent_change",
+        "trg_agent_session_codex_delete",
+        "trg_agent_interaction_codex_insert",
+        "trg_agent_interaction_codex_update",
+        "trg_agent_interaction_codex_agent_change",
+        "trg_agent_interaction_codex_delete",
+        "trg_agent_outbox_codex_insert",
+        "trg_agent_outbox_codex_update",
+        "trg_agent_outbox_codex_agent_change",
+        "trg_agent_audit_codex_insert",
+        "trg_agent_audit_codex_update",
+        "trg_agent_audit_codex_agent_change",
+    ):
+        connection.execute(f"DROP TRIGGER IF EXISTS {name}")
     _execute_statements(connection, MIRROR_TRIGGER_STATEMENTS)
 
 

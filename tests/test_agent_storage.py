@@ -1,7 +1,17 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import inspect
+import sqlite3
+import threading
+from uuid import uuid4
 
-from lark_bot.modules.agent.agent_model import AgentKind, AgentInteraction, AgentSession, InteractionKind, SessionStatus
+from lark_bot.modules.agent.agent_model import (
+    AgentKind,
+    AgentInteraction,
+    AgentSession,
+    InteractionKind,
+    InteractionStatus,
+    SessionStatus,
+)
 from lark_bot.modules.agent.agent_store import SQLiteAgentStore
 from lark_bot.modules.agent import agent_schema
 from lark_bot.modules.codex import codex_schema
@@ -156,3 +166,125 @@ def test_partial_v1_migration_adds_missing_tables_and_quotes_request_id():
     assert connection.execute("SELECT request_id FROM agent_interactions").fetchone()[0] == '"legacy"'
     assert connection.execute("SELECT COUNT(*) FROM agent_event_dedupe").fetchone()[0] == 0
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_concurrent_refresh_resolution_has_exactly_one_winner():
+    from pathlib import Path
+
+    path = Path("tests") / f".agent-test-{uuid4().hex}.db"
+    now = datetime.now(timezone.utc)
+    try:
+        with SQLiteAgentStore(path) as setup:
+            setup.create(AgentSession(session_id="s", agent=AgentKind.CODEX, name="codex", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+            setup.create_interaction(AgentInteraction(interaction_id="i", session_id="s", request_id="r", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now + timedelta(minutes=1)))
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+        errors: list[BaseException] = []
+
+        def resolve(actor: str) -> None:
+            try:
+                with SQLiteAgentStore(path) as store:
+                    barrier.wait(timeout=5)
+                    results.append(store.resolve_interaction_and_refresh_session("i", decision="approved", actor_id=actor, updated_at=now + timedelta(seconds=1)))
+            except BaseException as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=resolve, args=("a",)), threading.Thread(target=resolve, args=("b",))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert not errors
+        assert sorted(results) == [False, True]
+        with SQLiteAgentStore(path) as store:
+            assert store.get_interaction("i").status is InteractionStatus.RESOLVED
+            assert store.get_session("s").status is SessionStatus.RUNNING
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_reconcile_startup_filters_provider_and_unfiltered_scope():
+    from pathlib import Path
+
+    now = datetime.now(timezone.utc)
+    path = Path("tests") / f".agent-test-{uuid4().hex}.db"
+    try:
+        with SQLiteAgentStore(path) as store:
+            for agent in (AgentKind.CODEX, AgentKind.CLAUDE):
+                session_id = f"{agent.value}-s"
+                store.create(AgentSession(session_id=session_id, agent=agent, name=agent.value, conversation_id="same", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+                store.create_interaction(AgentInteraction(interaction_id=f"{agent.value}-i", session_id=session_id, request_id=f"{agent.value}-r", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now + timedelta(minutes=1)))
+            result = store.reconcile_startup(now=now + timedelta(hours=1), agent=AgentKind.CODEX)
+            assert result.session_ids == ["codex-s"]
+            assert result.interaction_ids == ["codex-i"]
+            assert store.get_session("claude-s").status is SessionStatus.RUNNING
+            assert store.get_interaction("claude-i").status is InteractionStatus.PENDING
+            result = store.reconcile_startup(now=now + timedelta(hours=2))
+            assert result.session_ids == ["claude-s"]
+            assert result.interaction_ids == ["claude-i"]
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_codex_mirrors_all_rows_and_updates_without_mirroring_claude():
+    from pathlib import Path
+
+    now = datetime.now(timezone.utc)
+    path = Path("tests") / f".agent-test-{uuid4().hex}.db"
+    try:
+        with SQLiteAgentStore(path) as store:
+            store.create(AgentSession(session_id="cx", agent=AgentKind.CODEX, name="codex", conversation_id="conv", cwd="/old", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+            store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="claude", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+            store.create_interaction(AgentInteraction(interaction_id="ci", session_id="cx", request_id="cr", kind=InteractionKind.EXEC_APPROVAL, payload_summary="payload", requested_at=now, expires_at=now + timedelta(minutes=1)))
+            store.create_interaction(AgentInteraction(interaction_id="li", session_id="cl", request_id="lr", kind=InteractionKind.EXEC_APPROVAL, payload_summary="claude-secret", requested_at=now, expires_at=now + timedelta(minutes=1)))
+            assert store.record_event_once("event", agent=AgentKind.CODEX)
+            assert store.record_event_once("event", agent=AgentKind.CLAUDE)
+            outbox_id = store.enqueue_outbox(notification_type="notice", payload_summary="outbox", session_id="cx", agent=AgentKind.CODEX, created_at=now)
+            claude_outbox_id = store.enqueue_outbox(notification_type="notice", payload_summary="claude-outbox", session_id="cl", agent=AgentKind.CLAUDE, created_at=now)
+            audit_id = store.record_audit(event_type="started", detail_summary="audit", session_id="cx", created_at=now, agent=AgentKind.CODEX)
+            sessionless_id = store.record_audit(event_type="sessionless", detail_summary="sessionless", created_at=now, agent=AgentKind.CODEX)
+            store.record_audit(event_type="claude", detail_summary="claude-audit", created_at=now, agent=AgentKind.CLAUDE)
+            with store._connection() as connection:
+                connection.execute("UPDATE agent_sessions SET name=?,cwd=?,updated_at=? WHERE id='cx'", ("codex-updated", "/new", now.isoformat()))
+                connection.execute("UPDATE agent_interactions SET payload_summary=?,actor_id=?,decision=?,status=? WHERE id='ci'", ("payload-updated", "actor", "approved", "resolved"))
+                connection.execute("UPDATE agent_notification_outbox SET payload_summary=?,last_error=?,attempt_count=? WHERE id=?", ("outbox-updated", "err", 2, outbox_id))
+                connection.execute("UPDATE agent_audit SET detail_summary=? WHERE id=?", ("audit-updated", audit_id))
+                rows = {
+                    name: connection.execute(f"SELECT * FROM {name}").fetchall()
+                    for name in ("codex_sessions", "codex_interactions", "codex_event_dedupe", "notification_outbox", "codex_audit")
+                }
+            assert rows["codex_sessions"][0][0:4] == ("cx", "conv", None, "codex-updated")
+            assert rows["codex_interactions"][0][0] == "ci" and rows["codex_interactions"][0][6] == "payload-updated"
+            assert {row[0] for row in rows["codex_event_dedupe"]} == {"event"}
+            assert any(row[0] == outbox_id and row[4] == "outbox-updated" for row in rows["notification_outbox"])
+            assert {row[0] for row in rows["codex_audit"]} >= {audit_id, sessionless_id}
+            assert all("claude" not in str(row) for table in rows.values() for row in table)
+            assert claude_outbox_id not in {row[0] for row in rows["notification_outbox"]}
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_agent_transition_removes_codex_legacy_rows_and_privacy_holds():
+    from pathlib import Path
+
+    now = datetime.now(timezone.utc)
+    secret = "token=raw-user-secret-123"
+    path = Path("tests") / f".agent-test-{uuid4().hex}.db"
+    try:
+        with SQLiteAgentStore(path) as store:
+            store.create(AgentSession(session_id="s", agent=AgentKind.CODEX, name="name", status=SessionStatus.RUNNING, created_at=now, updated_at=now, summary=secret))
+            store.create_interaction(AgentInteraction(interaction_id="i", session_id="s", request_id="r", kind=InteractionKind.USER_INPUT, payload_summary=secret, requested_at=now, expires_at=now))
+            assert store.resolve_interaction("i", decision=secret, actor_id="u", resolved_at=now)
+            outbox_id = store.enqueue_outbox(notification_type="n", payload_summary=secret, session_id="s", interaction_id="i", agent=AgentKind.CODEX, created_at=now)
+            store.record_outbox_failure(outbox_id, error=secret, next_attempt_at=now)
+            store.record_audit(event_type="sessionless", detail_summary=secret, agent=AgentKind.CODEX, created_at=now)
+            with store._connection() as connection:
+                text_fields = connection.execute("SELECT summary FROM agent_sessions UNION ALL SELECT payload_summary FROM agent_interactions UNION ALL SELECT payload_summary FROM agent_notification_outbox UNION ALL SELECT last_error FROM agent_notification_outbox UNION ALL SELECT detail_summary FROM agent_audit").fetchall()
+                assert all(secret not in (row[0] or "") for row in text_fields)
+                connection.execute("UPDATE agent_sessions SET agent='claude' WHERE id='s'")
+                assert connection.execute("SELECT COUNT(*) FROM codex_sessions WHERE id='s'").fetchone()[0] == 0
+                assert connection.execute("SELECT COUNT(*) FROM codex_interactions WHERE session_id='s'").fetchone()[0] == 0
+                assert connection.execute("SELECT COUNT(*) FROM notification_outbox WHERE session_id='s'").fetchone()[0] == 0
+                assert connection.execute("SELECT COUNT(*) FROM codex_audit WHERE session_id='s'").fetchone()[0] == 0
+    finally:
+        path.unlink(missing_ok=True)
