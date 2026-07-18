@@ -3,10 +3,10 @@ from pathlib import Path
 
 
 def test_canonical_task_and_notification_modules_are_importable() -> None:
-    detector = import_module("lark_bot.tasks.detector")
-    runner = import_module("lark_bot.tasks.runner")
-    notifier_base = import_module("lark_bot.notifications.base")
-    codex_adapter = import_module("lark_bot.notifications.adapters.codex")
+    detector = import_module("lark_bot.modules.task.task_detector")
+    runner = import_module("lark_bot.modules.task.task_runner")
+    notifier_base = import_module("lark_bot.modules.notification.notification_base")
+    codex_adapter = import_module("lark_bot.modules.codex.codex_adapter")
 
     assert callable(detector.detect_output)
     assert callable(runner.run_command)
@@ -14,10 +14,30 @@ def test_canonical_task_and_notification_modules_are_importable() -> None:
     assert hasattr(codex_adapter, "CodexEvent")
 
 
+def test_agent_modules_have_explicit_provider_and_shared_owners() -> None:
+    names = {
+        "agent": "lark_bot.modules.agent.agent_service",
+        "task": "lark_bot.modules.task.task_runner",
+        "notification": "lark_bot.modules.notification.notification_service",
+        "lark": "lark_bot.modules.lark.lark_router",
+        "codex": "lark_bot.modules.codex.codex_orchestrator",
+        "claude": "lark_bot.modules.claude.claude_adapter",
+    }
+
+    modules = {key: import_module(value) for key, value in names.items()}
+
+    assert modules["agent"].AgentRegistry
+    assert modules["task"].run_command
+    assert modules["notification"].send_with_dedupe
+    assert modules["lark"].LarkControlRouter
+    assert modules["codex"].CodexOrchestrator
+    assert modules["claude"].ClaudeEvent
+
+
 def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> None:
-    messages = import_module("lark_bot.codex.app_server.messages")
-    responses = import_module("lark_bot.codex.app_server.responses")
-    client = import_module("lark_bot.codex.app_server.client")
+    messages = import_module("lark_bot.modules.codex.app_server.app_server_message")
+    responses = import_module("lark_bot.modules.codex.app_server.app_server_response")
+    client = import_module("lark_bot.modules.codex.app_server.app_server_client")
 
     for name in (
         "ServerRequest",
@@ -52,16 +72,16 @@ def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> Non
 
 def test_codex_runtime_modules_live_under_codex_package() -> None:
     modules = {
-        name: import_module(f"lark_bot.codex.{name}")
-        for name in (
-            "models",
-            "gateway",
-            "interactive",
-            "tui",
-            "hooks",
-            "hook_adapter",
-            "probe",
-        )
+        name: import_module(path)
+        for name, path in {
+            "models": "lark_bot.modules.codex.codex_model",
+            "gateway": "lark_bot.modules.codex.codex_gateway",
+            "interactive": "lark_bot.modules.codex.codex_interactive",
+            "tui": "lark_bot.modules.codex.codex_tui",
+            "hooks": "lark_bot.modules.codex.codex_hook",
+            "hook_adapter": "lark_bot.modules.codex.codex_hook_adapter",
+            "probe": "lark_bot.modules.codex.codex_probe",
+        }.items()
     }
 
     assert hasattr(modules["models"], "CodexSession")
@@ -74,18 +94,18 @@ def test_codex_runtime_modules_live_under_codex_package() -> None:
 
 
 def test_lark_modules_separate_client_routing_and_connection() -> None:
-    assert import_module("lark_bot.lark.client").LarkBotClient
-    assert import_module("lark_bot.lark.events").LarkMessageEvent
-    assert import_module("lark_bot.lark.router").LarkControlRouter
-    assert import_module("lark_bot.lark.connection").LarkLongConnection
-    assert import_module("lark_bot.lark.messages").RenderedMessage
-    assert callable(import_module("lark_bot.lark.render").render_task_notification)
+    assert import_module("lark_bot.modules.lark.lark_client").LarkBotClient
+    assert import_module("lark_bot.modules.lark.lark_event").LarkMessageEvent
+    assert import_module("lark_bot.modules.lark.lark_router").LarkControlRouter
+    assert import_module("lark_bot.modules.lark.lark_connection").LarkLongConnection
+    assert import_module("lark_bot.modules.lark.lark_message").RenderedMessage
+    assert callable(import_module("lark_bot.modules.lark.lark_render").render_task_notification)
 
 
 def test_codex_storage_package_exports_store_and_schema_tables() -> None:
-    module = import_module("lark_bot.storage.codex")
+    module = import_module("lark_bot.modules.codex.codex_store")
     store_type = module.SQLiteCodexStore
-    assert store_type.__module__ == "lark_bot.storage.codex.store"
+    assert store_type.__module__ == "lark_bot.modules.codex.codex_store"
 
     with store_type(":memory:") as store:
         with store._connection() as connection:
@@ -105,10 +125,10 @@ def test_codex_storage_package_exports_store_and_schema_tables() -> None:
 
 
 def test_codex_orchestrator_has_focused_modules() -> None:
-    assert import_module("lark_bot.codex.orchestration.service").CodexOrchestrator
-    assert import_module("lark_bot.codex.orchestration.events").OrchestratorEventType
-    assert import_module("lark_bot.codex.orchestration.interactions").resolution
-    assert import_module("lark_bot.codex.orchestration.summaries").request_summary
+    assert import_module("lark_bot.modules.codex.codex_orchestrator").CodexOrchestrator
+    assert import_module("lark_bot.modules.codex.orchestration.orchestration_event").OrchestratorEventType
+    assert import_module("lark_bot.modules.codex.orchestration.orchestration_interaction").resolution
+    assert import_module("lark_bot.modules.codex.orchestration.orchestration_summary").request_summary
 
 
 def test_daemon_separates_auth_runtime_and_routes() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from lark_bot.codex.hook_adapter import (
+from lark_bot.modules.codex.codex_hook_adapter import (
     MAX_CALLBACK_BYTES,
     forward_existing_notify,
     handle_callback,
@@ -81,7 +81,7 @@ def test_daemon_failure_spools_only_normalized_payload(workspace_tmp_path):
 def test_existing_notify_is_chained_with_original_payload_and_recursion_guard(monkeypatch):
     raw = json.dumps({"type": "agent-turn-complete", "turn-id": "turn-1", "last-assistant-message": "original"})
     calls = []
-    monkeypatch.setattr("lark_bot.codex.hook_adapter.subprocess.Popen", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr("lark_bot.modules.codex.codex_hook_adapter.subprocess.Popen", lambda args, **kwargs: calls.append((args, kwargs)))
     env = {"LARK_BOT_CODEX_NOTIFY_CHAIN": json.dumps(["existing-notifier", "turn-ended"])}
 
     assert forward_existing_notify(argv=["codex-hook", raw], stdin="", environ=env)
