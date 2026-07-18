@@ -430,6 +430,8 @@ def test_outbox_enqueue_list_due_and_mark_sent():
         notification_type="session_started",
         payload_summary="redacted start summary",
         session_id="session-1",
+        agent="codex",
+        session_name="test session",
         next_attempt_at=NOW,
         created_at=NOW,
     )
@@ -445,6 +447,8 @@ def test_outbox_enqueue_list_due_and_mark_sent():
 
     assert [item.id for item in due] == [due_id]
     assert due[0].attempt_count == 0
+    assert due[0].agent.value == "codex"
+    assert due[0].session_name == "test session"
     assert store.mark_outbox_sent(due_id, sent_at=NOW + timedelta(seconds=1))
     assert not store.mark_outbox_sent(due_id, sent_at=NOW + timedelta(seconds=2))
     assert store.list_due_outbox(now=NOW + timedelta(minutes=10), limit=10) == [
@@ -791,7 +795,7 @@ def test_schema_version_and_required_indexes_are_installed():
             )
         }
 
-    assert version == 2
+    assert version == 3
     assert {
         "idx_codex_sessions_status",
         "idx_codex_interactions_status",
@@ -868,7 +872,12 @@ def test_schema_v1_migration_canonicalizes_request_ids_and_preserves_reuse(
     assert store.get_interaction(interaction.id).request_id == '"legacy-id"'
     with store._connection() as migrated:
         assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 3
+        columns = {
+            row[1]
+            for row in migrated.execute("PRAGMA table_info(notification_outbox)")
+        }
+        assert {"agent", "session_name"} <= columns
     reused = make_interaction("interaction-2").model_copy(
         update={"request_id": '"legacy-id"'}
     )

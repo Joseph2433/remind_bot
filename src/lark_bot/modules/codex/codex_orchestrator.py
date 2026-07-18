@@ -752,17 +752,20 @@ class CodexOrchestrator:
         interaction_id: str | None = None,
     ) -> None:
         event = OrchestratorEvent(
-                event_type=event_type,
-                session_id=session_id,
-                interaction_id=interaction_id,
-                status=status,
-                summary=_safe_summary(summary),
-            )
+            event_type=event_type,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            status=status,
+            summary=_safe_summary(summary),
+        )
         created_at = self._utc_now()
+        session = self._store.get_session(session_id)
         self._store.enqueue_outbox(
             notification_type=f"orchestrator:{event_type.value}",
             payload_summary=event.summary,
             session_id=session_id,
+            agent="codex",
+            session_name=session.name if session is not None else session_id,
             interaction_id=interaction_id,
             created_at=created_at,
             next_attempt_at=created_at + timedelta(seconds=self._notification_delay_seconds),

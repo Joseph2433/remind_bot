@@ -18,6 +18,7 @@ from lark_bot.modules.codex.codex_model import (
     SessionStatus,
     StartupReconciliationResult,
 )
+from lark_bot.modules.agent.agent_model import AgentKind
 from lark_bot.modules.codex.codex_mapper import (
     audit_from_row as _audit_from_row,
     interaction_from_row as _interaction_from_row,
@@ -697,6 +698,8 @@ class SQLiteCodexStore:
         notification_type: str,
         payload_summary: str,
         session_id: str | None = None,
+        agent: AgentKind | str | None = None,
+        session_name: str | None = None,
         interaction_id: str | None = None,
         next_attempt_at: datetime | None = None,
         created_at: datetime | None = None,
@@ -707,12 +710,14 @@ class SQLiteCodexStore:
             cursor = connection.execute(
                 """
                 INSERT INTO notification_outbox (
-                    session_id, interaction_id, notification_type,
+                    session_id, agent, session_name, interaction_id, notification_type,
                     payload_summary, next_attempt_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
+                    agent.value if isinstance(agent, AgentKind) else agent,
+                    session_name,
                     interaction_id,
                     notification_type,
                     _safe_summary(payload_summary),

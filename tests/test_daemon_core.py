@@ -231,6 +231,32 @@ def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
     asyncio.run(scenario())
 
 
+def test_runtime_renders_session_identity(workspace_tmp_path):
+    runtime, store, _, _, _ = _runtime(workspace_tmp_path)
+    store.sessions["session-1"] = CodexSession(
+        id="session-1",
+        name="build",
+        cwd=".",
+        sandbox="workspace-write",
+        status=SessionStatus.RUNNING,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    rendered = runtime._render(
+        SimpleNamespace(
+            notification_type="orchestrator:turn_completed",
+            payload_summary="done",
+            interaction_id=None,
+            session_id="session-1",
+            agent="codex",
+            session_name="build",
+        )
+    )
+
+    assert "codex / build [session-]" in rendered.content["body"]["elements"][0]["content"]
+
+
 def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp_path):
     runtime, _, _, _, _ = _runtime(workspace_tmp_path)
 

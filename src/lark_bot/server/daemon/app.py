@@ -17,6 +17,7 @@ from lark_bot.modules.codex.app_server import CodexAppServerClient, ProcessExite
 from lark_bot.modules.codex.codex_interactive import InteractiveSessionManager
 from lark_bot.modules.codex.codex_model import CodexSession, SessionStatus
 from lark_bot.modules.codex.codex_orchestrator import CodexOrchestrator
+from lark_bot.modules.agent.agent_model import AgentKind, SessionDisplay
 from lark_bot.modules.lark.lark_client import LarkBotClient
 from lark_bot.modules.lark.lark_connection import LarkLongConnection
 from lark_bot.modules.lark.lark_message import MessageFormat, RenderedMessage
@@ -186,6 +187,16 @@ class DaemonRuntime:
             getter = getattr(self.store, "get_interaction", None)
             if getter is not None and item.interaction_id:
                 interaction = getter(item.interaction_id)
+        session_display = None
+        session_id = getattr(item, "session_id", None)
+        if session_id:
+            session = self.store.get_session(session_id)
+            if session is not None:
+                session_display = SessionDisplay(
+                    session_id=session_id,
+                    session_name=session.name,
+                    agent=getattr(item, "agent", None) or AgentKind.CODEX,
+                )
         message_format: MessageFormat = getattr(self.settings, "message_format", "card")
         if message_format not in {"card", "text"}:
             message_format = "card"
@@ -193,6 +204,7 @@ class DaemonRuntime:
             item,
             message_format=message_format,
             interaction=interaction,
+            session=session_display,
         )
 
     async def close(self) -> None:

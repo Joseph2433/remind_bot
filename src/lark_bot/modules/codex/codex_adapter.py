@@ -4,7 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from lark_bot.modules.notification.notification_model import NotificationRequest
+from lark_bot.modules.agent.agent_model import AgentKind
+from lark_bot.modules.notification.notification_model import (
+    NotificationContext,
+    NotificationRequest,
+)
 from lark_bot.modules.task.task_detector import dedupe_tags, detect_output
 from lark_bot.modules.task.task_model import DetectionResult, TaskResult, TaskStatus
 
@@ -23,6 +27,8 @@ WAITING_STATUSES = {
 
 class CodexEvent(BaseModel):
     task_name: str = "codex task"
+    session_id: str | None = None
+    session_name: str | None = None
     status: str
     command: list[str] = Field(default_factory=lambda: ["codex"])
     exit_code: int | None = None
@@ -63,7 +69,14 @@ def codex_event_to_notification(event: CodexEvent) -> NotificationRequest:
         source="codex",
     )
     detection = _codex_detection(event, task, status)
-    return NotificationRequest(task=task, detection=detection)
+    context = None
+    if event.session_id:
+        context = NotificationContext(
+            agent=AgentKind.CODEX,
+            session_id=event.session_id,
+            session_name=event.session_name or event.task_name,
+        )
+    return NotificationRequest(task=task, detection=detection, context=context)
 
 
 def _codex_detection(event: CodexEvent, task: TaskResult, status: TaskStatus) -> DetectionResult:

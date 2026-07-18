@@ -56,6 +56,8 @@ def outbox_from_row(row: sqlite3.Row) -> NotificationOutboxItem:
     return NotificationOutboxItem(
         id=row["id"],
         session_id=row["session_id"],
+        agent=row["agent"],
+        session_name=row["session_name"],
         interaction_id=row["interaction_id"],
         notification_type=row["notification_type"],
         payload_summary=row["payload_summary"],

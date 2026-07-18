@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -109,6 +109,10 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE INDEX idx_codex_interactions_status ON codex_interactions(status)",
         "CREATE UNIQUE INDEX idx_codex_interactions_pending_request "
         "ON codex_interactions(request_id) WHERE status = 'pending'",
+    ),
+    3: (
+        "ALTER TABLE notification_outbox ADD COLUMN agent TEXT",
+        "ALTER TABLE notification_outbox ADD COLUMN session_name TEXT",
     ),
 }
 

@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from lark_bot.modules.agent.agent_model import InteractionKind
+from lark_bot.modules.agent.agent_model import AgentKind, InteractionKind
 
 
 class SessionStatus(StrEnum):
@@ -94,6 +94,8 @@ class PendingInteraction(BaseModel):
 class NotificationOutboxItem(BaseModel):
     id: int
     session_id: str | None = None
+    agent: AgentKind | None = None
+    session_name: str | None = None
     interaction_id: str | None = None
     notification_type: str
     payload_summary: str

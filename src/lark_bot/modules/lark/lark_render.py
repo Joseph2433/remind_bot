@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from lark_bot.modules.agent.agent_model import InteractionKind
+from lark_bot.modules.agent.agent_model import AgentKind, InteractionKind, SessionDisplay
 from lark_bot.modules.lark.lark_message import (
     HeaderTemplate,
     MessageFormat,
@@ -57,14 +57,17 @@ def render_outbox_notification(
     *,
     message_format: MessageFormat = "card",
     interaction: Any | None = None,
+    session: SessionDisplay | None = None,
 ) -> RenderedMessage:
     heading, instruction = _outbox_heading_and_instruction(item, interaction)
     summary = redact_text(str(item.payload_summary))
-    plain = _outbox_plain_text(heading, summary, instruction)
+    display = session or _session_display_from_item(item)
+    label = display.label if display is not None else None
+    plain = _outbox_plain_text(heading, summary, instruction, label)
     plain = _escape_lark_at_tags(plain)
     if message_format == "text":
         return text_message(plain)
-    markdown = _outbox_markdown(summary, instruction)
+    markdown = _outbox_markdown(summary, instruction, label)
     markdown = _neutralize_lark_mentions(markdown)
     markdown = _truncate_markdown(markdown, MARKDOWN_BODY_LIMIT)
     return interactive_card(
@@ -91,6 +94,8 @@ def _task_body_text(request: NotificationRequest, *, tail_lines: int) -> str:
         f"Duration: {task.duration_seconds:.1f}s",
         f"Tags: {', '.join(detection.tags) if detection.tags else '-'}",
     ]
+    if request.context is not None:
+        lines.insert(3, f"Session: {_context_display(request).label}")
     tail = task.combined_tail_text.splitlines()[-tail_lines:]
     if tail:
         lines.append("")
@@ -109,6 +114,8 @@ def _task_markdown(request: NotificationRequest, *, tail_lines: int) -> str:
         f"**Exit:** {task.exit_code} · **Duration:** {task.duration_seconds:.1f}s",
         f"**Tags:** {tags}",
     ]
+    if request.context is not None:
+        parts.insert(2, f"**Session:** {_context_display(request).label}")
     tail = task.combined_tail_text.splitlines()[-tail_lines:]
     if tail:
         parts.extend(["", "### Output", "", "\n".join(tail)])
@@ -137,14 +144,30 @@ def _outbox_heading_and_instruction(
     return heading, instruction
 
 
-def _outbox_plain_text(heading: str, summary: str, instruction: str | None) -> str:
+def _outbox_plain_text(
+    heading: str,
+    summary: str,
+    instruction: str | None,
+    session_label: str | None,
+) -> str:
+    parts = [heading]
+    if session_label:
+        parts.append(f"Session: {session_label}")
+    if summary:
+        parts.append(summary)
     if instruction:
-        return f"{heading}\n{summary}\n{instruction}"
-    return f"{heading}\n{summary}"
+        parts.append(instruction)
+    return "\n".join(parts)
 
 
-def _outbox_markdown(summary: str, instruction: str | None) -> str:
+def _outbox_markdown(
+    summary: str,
+    instruction: str | None,
+    session_label: str | None,
+) -> str:
     parts: list[str] = []
+    if session_label:
+        parts.extend([f"**Session:** {session_label}", ""])
     if summary:
         parts.append(summary)
     if instruction:
@@ -152,6 +175,30 @@ def _outbox_markdown(summary: str, instruction: str | None) -> str:
             parts.extend(["", "---", ""])
         parts.append(instruction)
     return "\n".join(parts)
+
+
+def _context_display(request: NotificationRequest) -> SessionDisplay:
+    context = request.context
+    if context is None:
+        raise ValueError("notification context is required")
+    return SessionDisplay(
+        session_id=context.session_id,
+        session_name=context.session_name,
+        agent=context.agent,
+    )
+
+
+def _session_display_from_item(item: Any) -> SessionDisplay | None:
+    session_id = getattr(item, "session_id", None)
+    session_name = getattr(item, "session_name", None)
+    agent = getattr(item, "agent", None)
+    if not session_id or not session_name or not agent:
+        return None
+    return SessionDisplay(
+        session_id=str(session_id),
+        session_name=str(session_name),
+        agent=AgentKind(agent),
+    )
 
 
 def _neutralize_lark_mentions(markdown: str) -> str:
