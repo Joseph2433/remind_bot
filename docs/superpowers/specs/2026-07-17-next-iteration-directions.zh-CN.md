@@ -2,10 +2,19 @@
 
 记录并评估 global-daemon-home 之后的四个产品方向。本文是规划备忘，不是实现计划。
 
+## 进展（2026-07-18）
+
+| 优先级 | 方向 | 状态 |
+|--------|------|------|
+| **P0** | 4. MD / 卡片渲染 | **已完成** — PR #8 合入 `dev`（`feat/20260717-lark-card-render`，`906cbb4`）。设计见 `2026-07-17-lark-card-render-design.zh-CN.md` |
+| P1 | 1. Claude 通知适配 | 待开始（下一优先） |
+| P2 | 2. Session 并发 + 元数据 | 待开始 |
+| P3 | 3. 可选 multi-bot | 待开始 |
+
 ## 当前基线（相关约束）
 
 - 单一 Lark 应用 / 单一接收目标：`LARK_BOT_LARK_APP_ID` + 单个 `LARK_BOT_LARK_RECEIVE_ID`。
-- 出站通知为纯文本 `msg_type: text`（`src/lark_bot/lark/client.py` → `build_text_message`）。
+- 出站通知默认 **interactive 卡片（schema 2.0）**（`lark/render.py` + `build_interactive_message`）；`LARK_BOT_MESSAGE_FORMAT=text` 可回退纯文本。
 - Codex 已有完整路径：hooks 通知片段、事件适配器、app-server 编排器、审批/输入闭环、机器全局 `LARK_BOT_HOME` 下的 SQLite session 存储。
 - 已有通用 agent 入口（`POST /agent/events` + `AgentEvent`）；Codex 另有专用适配器（`notifications/adapters/codex.py`）和 `codex/` 下的托管控制面。
 - 产品定位仍是 **companion（陪伴侧车）**：监视、摘要、脱敏、通知；对托管 Codex 再做人机协同，而不是独立写代码的 agent。
@@ -141,12 +150,12 @@
 
 ## 建议优先级
 
-| 优先级 | 方向 | 理由 |
-|--------|------|------|
-| P0 | **4. MD / 卡片渲染** | 改动面小，立刻提升可读性，并为多 session 页眉打基础 |
-| P1 | **1. Claude 通知适配** | 用 Codex 验证过的形态扩 agent 覆盖；先不做完整 orchestrator |
-| P2 | **2. Session 并发 + 元数据** | Daemon 侧限流 + 打戳页眉；message_id 路由已多 session 就绪 |
-| P3 | **3. 可选 multi-bot（按 agent 或槽位）** | 等有 transport 抽象后再做；逻辑 source 分离在 P1 已完成 |
+| 优先级 | 方向 | 理由 | 状态 |
+|--------|------|------|------|
+| P0 | **4. MD / 卡片渲染** | 改动面小，立刻提升可读性，并为多 session 页眉打基础 | **已完成**（2026-07-18，PR #8） |
+| P1 | **1. Claude 通知适配** | 用 Codex 验证过的形态扩 agent 覆盖；先不做完整 orchestrator | 下一优先 |
+| P2 | **2. Session 并发 + 元数据** | Daemon 侧限流 + 打戳页眉；message_id 路由已多 session 就绪 | 待开始 |
+| P3 | **3. 可选 multi-bot（按 agent 或槽位）** | 等有 transport 抽象后再做；逻辑 source 分离在 P1 已完成 | 待开始 |
 
 ## 横切设计原则
 

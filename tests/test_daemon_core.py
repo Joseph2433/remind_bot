@@ -251,9 +251,9 @@ def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp
 
     assert completed.msg_type == "interactive"
     assert completed.content["header"]["title"]["content"] == "Codex 本轮已完成"
-    assert "done" in completed.content["body"]["elements"][0]["content"]
+    assert completed.content["body"]["elements"][0]["content"] == "done"
     assert interrupted.content["header"]["title"]["content"] == "Codex 本轮已中断"
-    assert "stopped" in interrupted.content["body"]["elements"][0]["content"]
+    assert interrupted.content["body"]["elements"][0]["content"] == "stopped"
 
 
 def test_runtime_runs_one_expiry_loop_and_collects_it_on_close(workspace_tmp_path):

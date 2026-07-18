@@ -53,6 +53,16 @@ def test_task_card_redacts_secrets_and_maps_status_color():
     assert "Need user input" in markdown
 
 
+def test_task_card_preserves_output_markdown_without_outer_code_fence():
+    request = _request(stdout_tail=["## 结果", "", "```python", "print('ok')", "```"])
+
+    rendered = render_task_notification(request, message_format="card", tail_lines=10)
+    body = rendered.content["body"]["elements"][0]["content"]
+
+    assert "### Output\n\nstdout:\n## 结果" in body
+    assert body.count("```") == 2
+
+
 def test_task_text_format_preserves_plain_layout():
     request = _request(stdout_tail=["token=abc123"])
     rendered = render_task_notification(request, message_format="text", tail_lines=5)
@@ -62,6 +72,14 @@ def test_task_text_format_preserves_plain_layout():
     assert "Lark Bot: succeeded" in text
     assert "abc123" not in text
     assert "[REDACTED]" in text
+
+
+def test_task_text_format_neutralizes_lark_mentions():
+    request = _request(stdout_tail=["<at id=all></at>"])
+
+    rendered = render_task_notification(request, message_format="text", tail_lines=5)
+
+    assert "&#60;at id=all&#62;&#60;/at&#62;" in rendered.content["text"]
 
 
 def test_outbox_approval_card_includes_instructions():
@@ -86,6 +104,107 @@ def test_outbox_approval_card_includes_instructions():
     assert "[REDACTED]" in body
     assert "yes 或 y" in body
     assert "no 或 n" in body
+
+
+def test_outbox_card_preserves_markdown_without_outer_code_fence():
+    summary = (
+        "# 结论\n\n"
+        "- 已完成\n\n"
+        "| 项目 | 状态 |\n| --- | --- |\n| 测试 | 通过 |\n\n"
+        "```python\nprint('ok')\n```"
+    )
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": summary,
+            "interaction_id": None,
+        },
+    )()
+
+    rendered = render_outbox_notification(item, message_format="card")
+    body = rendered.content["body"]["elements"][0]["content"]
+
+    assert body == summary
+    assert body.count("```") == 2
+    assert "**Codex 本轮已完成**" not in body
+
+
+def test_outbox_card_neutralizes_lark_mentions_outside_code():
+    summary = (
+        "Notify <at id=all></at>\n\n"
+        "`<at id=all></at>`\n\n"
+        "```xml\n<at id=all></at>\n```"
+    )
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": summary,
+            "interaction_id": None,
+        },
+    )()
+
+    rendered = render_outbox_notification(item, message_format="card")
+    body = rendered.content["body"]["elements"][0]["content"]
+
+    assert "Notify &#60;at id=all&#62;&#60;/at&#62;" in body
+    assert "`<at id=all></at>`" in body
+    assert "```xml\n<at id=all></at>\n```" in body
+
+
+def test_outbox_card_neutralizes_mentions_between_escaped_backticks():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": r"\`<at id=all></at>\`",
+            "interaction_id": None,
+        },
+    )()
+
+    rendered = render_outbox_notification(item, message_format="card")
+    body = rendered.content["body"]["elements"][0]["content"]
+
+    assert body == r"\`&#60;at id=all&#62;&#60;/at&#62;\`"
+
+
+def test_outbox_text_format_neutralizes_lark_mentions():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": "<at id=all></at>",
+            "interaction_id": None,
+        },
+    )()
+
+    rendered = render_outbox_notification(item, message_format="text")
+
+    assert "&#60;at id=all&#62;&#60;/at&#62;" in rendered.content["text"]
+
+
+def test_outbox_card_closes_code_fence_when_markdown_is_truncated():
+    summary = "```python\n" + ("print('long')\n" * 400)
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:turn_completed",
+            "payload_summary": summary,
+            "interaction_id": None,
+        },
+    )()
+
+    rendered = render_outbox_notification(item, message_format="card")
+    body = rendered.content["body"]["elements"][0]["content"]
+
+    assert len(body) <= 4000
+    assert body.endswith("...\n```")
 
 
 def test_build_api_payload_stringifies_content():
