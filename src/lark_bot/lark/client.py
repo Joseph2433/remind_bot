@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
@@ -8,10 +7,25 @@ from typing import Any
 
 import httpx
 
+from lark_bot.lark.messages import (
+    MessageFormat,
+    RenderedMessage,
+    build_api_payload,
+    build_text_message,
+    text_message,
+)
+from lark_bot.lark.render import render_notification_text, render_task_notification
 from lark_bot.models import NotificationRequest, ReceiveIdType
-from lark_bot.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+
+# Re-export for existing tests and callers.
+__all__ = [
+    "LarkAPIError",
+    "LarkBotClient",
+    "build_text_message",
+    "render_notification_text",
+]
 
 
 class LarkAPIError(RuntimeError):
@@ -24,14 +38,6 @@ class CachedToken:
     expires_at: float
 
 
-def build_text_message(receive_id: str, text: str) -> dict[str, Any]:
-    return {
-        "receive_id": receive_id,
-        "msg_type": "text",
-        "content": json.dumps({"text": text}, ensure_ascii=False),
-    }
-
-
 class LarkBotClient:
     def __init__(
         self,
@@ -42,6 +48,8 @@ class LarkBotClient:
         base_url: str = "https://open.feishu.cn",
         timeout_seconds: float = 10.0,
         client: httpx.Client | None = None,
+        message_format: MessageFormat = "card",
+        output_tail_lines: int = 40,
     ) -> None:
         self.app_id = app_id
         self.app_secret = app_secret
@@ -49,6 +57,8 @@ class LarkBotClient:
         self.receive_id_type = receive_id_type
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.message_format = message_format
+        self.output_tail_lines = output_tail_lines
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
         self._cached_token: CachedToken | None = None
@@ -58,13 +68,20 @@ class LarkBotClient:
             self._client.close()
 
     def send(self, request: NotificationRequest) -> str:
-        text = self.render_notification_text(request)
-        return self.send_text(text)
+        rendered = render_task_notification(
+            request,
+            message_format=self.message_format,
+            tail_lines=self.output_tail_lines,
+        )
+        return self.send_rendered(rendered)
 
     def send_text(self, text: str) -> str:
+        return self.send_rendered(text_message(text))
+
+    def send_rendered(self, message: RenderedMessage) -> str:
         token = self.get_tenant_access_token()
         url = f"{self.base_url}/open-apis/im/v1/messages"
-        payload = build_text_message(self.receive_id, text)
+        payload = build_api_payload(self.receive_id, message)
         try:
             response = self._client.post(
                 url,
@@ -128,22 +145,7 @@ class LarkBotClient:
 
     @staticmethod
     def render_notification_text(request: NotificationRequest, tail_lines: int = 40) -> str:
-        task = request.task
-        detection = request.detection
-        lines = [
-            f"Lark Bot: {detection.status.value}",
-            f"Task: {task.name}",
-            f"Source: {task.source}",
-            f"Exit code: {task.exit_code}",
-            f"Duration: {task.duration_seconds:.1f}s",
-            f"Tags: {', '.join(detection.tags) if detection.tags else '-'}",
-        ]
-        tail = task.combined_tail_text.splitlines()[-tail_lines:]
-        if tail:
-            lines.append("")
-            lines.append("Output tail:")
-            lines.extend(tail)
-        return redact_text("\n".join(lines))
+        return render_notification_text(request, tail_lines=tail_lines)
 
 
 def _safe_json(response: httpx.Response) -> dict[str, Any]:
