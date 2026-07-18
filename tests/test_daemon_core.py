@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from lark_bot.config import Settings
 from lark_bot.codex.models import CodexSession, NotificationOutboxItem, SessionStatus
-from lark_bot.server.daemon import DaemonRuntime, create_daemon_app, ensure_daemon_token
+from lark_bot.modules.agent.agent_model import AgentKind
+from lark_bot.server.daemon import DaemonRuntime, build_runtime, create_daemon_app, ensure_daemon_token
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
@@ -255,6 +257,28 @@ def test_runtime_renders_session_identity(workspace_tmp_path):
     )
 
     assert "codex / build [session-]" in rendered.content["body"]["elements"][0]["content"]
+
+
+def test_build_runtime_registers_codex_and_claude_on_one_bot(workspace_tmp_path):
+    settings = Settings(
+        sqlite_path=workspace_tmp_path / "runtime.sqlite3",
+        daemon_token_path=workspace_tmp_path / "daemon.token",
+        lark_app_id="app",
+        lark_app_secret="secret",
+        lark_receive_id="chat",
+    )
+    runtime = build_runtime(settings)
+
+    try:
+        assert runtime.agent_registry is not None
+        assert runtime.agent_registry.registered() == (
+            AgentKind.CODEX,
+            AgentKind.CLAUDE,
+        )
+        assert runtime.agent_registry.get(AgentKind.CODEX).orchestrator is runtime.orchestrator
+        assert runtime.lark_client.receive_id == "chat"
+    finally:
+        asyncio.run(runtime.close())
 
 
 def test_runtime_renders_interactive_turn_notifications_in_chinese(workspace_tmp_path):

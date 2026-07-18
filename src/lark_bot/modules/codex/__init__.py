@@ -10,11 +10,13 @@ from lark_bot.modules.codex.codex_model import (
     SessionStatus,
 )
 from lark_bot.modules.codex.codex_orchestrator import CodexOrchestrator
+from lark_bot.modules.codex.codex_service import CodexService
 
 __all__ = [
     "CodexEvent",
     "CodexOrchestrator",
     "CodexSession",
+    "CodexService",
     "InteractionDecision",
     "InteractionKind",
     "InteractionStatus",
