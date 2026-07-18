@@ -59,6 +59,19 @@ def test_codex_adapter_waiting_defaults_to_exit_zero_and_waiting_tags():
     assert request.detection.tags == ["codex", "waiting_for_input"]
 
 
+def test_codex_explicit_waiting_keeps_detected_phrase_tags():
+    event = CodexEvent(
+        task_name="approval",
+        status="approval_required",
+        output_tail=["Approval required before continuing"],
+    )
+
+    request = codex_event_to_notification(event)
+
+    assert request.detection.tags == ["codex", "approval"]
+    assert request.detection.matched_phrases == ["Approval"]
+
+
 def test_codex_adapter_keeps_failed_status_for_permission_denied_errors():
     event = CodexEvent(
         task_name="write file",

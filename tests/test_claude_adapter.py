@@ -70,6 +70,29 @@ def test_claude_permission_request_maps_to_waiting() -> None:
     assert "claude" in request.detection.tags
 
 
+def test_claude_permission_request_keeps_explicit_waiting_tag() -> None:
+    from lark_bot.modules.claude.claude_adapter import (
+        ClaudeEvent,
+        claude_event_to_notification,
+    )
+
+    request = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="claude-session-waiting",
+            session_name="review",
+            event_name="PermissionRequest",
+            summary="Approval required before continuing",
+        )
+    )
+
+    assert request.detection.tags == [
+        "claude",
+        "PermissionRequest",
+        "waiting_for_input",
+    ]
+    assert request.detection.matched_phrases == ["Approval"]
+
+
 def test_claude_adapter_rejects_unsupported_hook_event() -> None:
     from lark_bot.modules.claude.claude_adapter import (
         ClaudeEvent,
