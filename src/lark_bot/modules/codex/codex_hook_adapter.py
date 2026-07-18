@@ -3,31 +3,29 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-MAX_CALLBACK_BYTES = 65_536
+from lark_bot.modules.agent.agent_hook import (
+    MAX_HOOK_BYTES,
+    deliver_sanitized_hook,
+    parse_bounded_json_object,
+    read_callback_stdin,
+)
+
+MAX_CALLBACK_BYTES = MAX_HOOK_BYTES
 _HOOK_EVENTS = {"SessionStart", "PermissionRequest", "Stop"}
 
 
 def read_stdin_payload(argv: Sequence[str], reader: Callable[[int], str]) -> str:
     """Avoid touching inherited terminal stdin when notify supplied argv JSON."""
 
-    if argv and _bounded_json(argv[-1]) is not None:
-        return ""
-    return reader(MAX_CALLBACK_BYTES + 1)
+    return read_callback_stdin(argv, reader, max_bytes=MAX_CALLBACK_BYTES)
 
 
 def _bounded_json(raw: str) -> dict[str, Any] | None:
-    try:
-        if len(raw.encode("utf-8")) > MAX_CALLBACK_BYTES:
-            return None
-        value = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
+    return parse_bounded_json_object(raw, max_bytes=MAX_CALLBACK_BYTES)
 
 
 def normalize_callback(*, argv: Sequence[str], stdin: str) -> dict[str, str] | None:
@@ -87,17 +85,7 @@ def handle_callback(
     safe = normalize_callback(argv=argv, stdin=stdin)
     if safe is None:
         return False
-    try:
-        sender(safe)
-        return True
-    except Exception:
-        try:
-            spool_dir.mkdir(parents=True, exist_ok=True)
-            path = spool_dir / f"hook-{uuid.uuid4().hex}.json"
-            path.write_text(json.dumps(safe, ensure_ascii=False), encoding="utf-8")
-            return True
-        except OSError:
-            return False
+    return deliver_sanitized_hook(safe, sender, spool_dir)
 
 
 def forward_existing_notify(

@@ -1,9 +1,25 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lark_bot.modules.agent.agent_model import AgentKind
-from lark_bot.modules.task.task_model import DetectionResult, TaskResult
+from lark_bot.modules.task.task_model import DetectionResult, TaskResult, TaskStatus
+
+
+class AgentNotificationInput(BaseModel):
+    agent: AgentKind
+    task_name: str = Field(min_length=1)
+    status: TaskStatus
+    command: list[str]
+    session_id: str | None = None
+    session_name: str | None = None
+    event_name: str | None = None
+    exit_code: int | None = None
+    duration_seconds: float = 0
+    summary: str = ""
+    output_tail: list[str] = Field(default_factory=list)
+    stderr_tail: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class NotificationContext(BaseModel):

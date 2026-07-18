@@ -5,12 +5,9 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from lark_bot.modules.agent.agent_model import AgentKind
-from lark_bot.modules.notification.notification_model import (
-    NotificationContext,
-    NotificationRequest,
-)
-from lark_bot.modules.task.task_detector import dedupe_tags, detect_output
-from lark_bot.modules.task.task_model import DetectionResult, TaskResult, TaskStatus
+from lark_bot.modules.notification.notification_builder import build_agent_notification
+from lark_bot.modules.notification.notification_model import AgentNotificationInput, NotificationRequest
+from lark_bot.modules.task.task_model import TaskStatus
 
 SUCCESS_STATUSES = {"success", "succeeded", "completed", "complete", "done"}
 FAILED_STATUSES = {"failed", "failure", "error", "errored"}
@@ -56,55 +53,21 @@ class CodexEvent(BaseModel):
 
 def codex_event_to_notification(event: CodexEvent) -> NotificationRequest:
     status = _normalize_status(event.status)
-    exit_code = _event_exit_code(event, status)
-    if status is TaskStatus.SUCCEEDED and exit_code != 0:
-        status = TaskStatus.FAILED
-    task = TaskResult(
-        name=event.task_name,
-        command=event.command,
-        exit_code=exit_code,
-        duration_seconds=event.duration_seconds,
-        stdout_tail=event.output_tail,
-        stderr_tail=event.stderr_tail,
-        source="codex",
-    )
-    detection = _codex_detection(event, task, status)
-    context = None
-    if event.session_id:
-        context = NotificationContext(
+    return build_agent_notification(
+        AgentNotificationInput(
             agent=AgentKind.CODEX,
+            task_name=event.task_name,
             session_id=event.session_id,
-            session_name=event.session_name or event.task_name,
+            session_name=event.session_name,
+            status=status,
+            command=event.command,
+            exit_code=event.exit_code,
+            duration_seconds=event.duration_seconds,
+            output_tail=event.output_tail,
+            stderr_tail=event.stderr_tail,
+            tags=event.tags,
         )
-    return NotificationRequest(task=task, detection=detection, context=context)
-
-
-def _codex_detection(event: CodexEvent, task: TaskResult, status: TaskStatus) -> DetectionResult:
-    detected = detect_output(task.combined_tail_text, task.exit_code)
-    tags = dedupe_tags(["codex", *event.tags])
-
-    # Explicit waiting status wins; only keep phrase tags when output also looks waiting.
-    if status is TaskStatus.WAITING_FOR_INPUT:
-        if detected.status is TaskStatus.WAITING_FOR_INPUT:
-            return DetectionResult(
-                status=TaskStatus.WAITING_FOR_INPUT,
-                tags=dedupe_tags([*tags, *detected.tags]),
-                matched_phrases=detected.matched_phrases,
-            )
-        return DetectionResult(
-            status=TaskStatus.WAITING_FOR_INPUT,
-            tags=dedupe_tags([*tags, TaskStatus.WAITING_FOR_INPUT.value]),
-        )
-
-    # Output-based waiting can still elevate success/failure terminals (approval prompts).
-    if detected.status is TaskStatus.WAITING_FOR_INPUT:
-        return DetectionResult(
-            status=TaskStatus.WAITING_FOR_INPUT,
-            tags=dedupe_tags([*tags, *detected.tags]),
-            matched_phrases=detected.matched_phrases,
-        )
-
-    return DetectionResult(status=status, tags=dedupe_tags([*tags, status.value]))
+    )
 
 
 def _normalize_status(status: str) -> TaskStatus:
@@ -119,11 +82,3 @@ def _normalize_status(status: str) -> TaskStatus:
         f"Unsupported Codex status: {status!r}. "
         "Use a terminal alias such as completed, failed, or approval_required."
     )
-
-
-def _event_exit_code(event: CodexEvent, status: TaskStatus) -> int:
-    if event.exit_code is not None:
-        return event.exit_code
-    if status is TaskStatus.FAILED:
-        return 1
-    return 0
