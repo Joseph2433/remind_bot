@@ -735,11 +735,35 @@ def test_mismatch_rollback_never_exposes_missing_or_partial_canonical(
     stop = threading.Event()
     observations: list[bytes | None] = []
     real_publish = getattr(installer, "_atomic_publish_existing", None)
+    user_temp = settings.with_name("user-settings.tmp")
+    real_replace = os.replace
+    injected_sharing_violations = 0
+
+    def flaky_replace(source, destination, *args, **kwargs):
+        nonlocal injected_sharing_violations
+        if Path(source) == user_temp and injected_sharing_violations < 2:
+            injected_sharing_violations += 1
+            error = PermissionError("simulated Windows sharing violation")
+            error.winerror = 5
+            raise error
+        return real_replace(source, destination, *args, **kwargs)
+
+    def replace_user_payload() -> None:
+        for attempt in range(4):
+            try:
+                os.replace(user_temp, settings)
+                return
+            except PermissionError as error:
+                is_windows_sharing_violation = (
+                    os.name == "nt" and getattr(error, "winerror", None) == 5
+                )
+                if not is_windows_sharing_violation or attempt == 3:
+                    raise
+                time.sleep(0.005)
 
     def raced_publish(path, temp_path, parent_fd, expected):
-        user_temp = settings.with_name("user-settings.tmp")
         user_temp.write_bytes(user)
-        os.replace(user_temp, settings)
+        replace_user_payload()
         entered.set()
         assert proceed.wait(5)
         return real_publish(path, temp_path, parent_fd, expected)
@@ -758,6 +782,7 @@ def test_mismatch_rollback_never_exposes_missing_or_partial_canonical(
                 continue
             time.sleep(0.001)
 
+    monkeypatch.setattr(os, "replace", flaky_replace)
     monkeypatch.setattr(installer, "_atomic_publish_existing", raced_publish, raising=False)
     reader = threading.Thread(target=read_canonical, daemon=True)
     reader.start()
@@ -775,6 +800,7 @@ def test_mismatch_rollback_never_exposes_missing_or_partial_canonical(
     observations.append(settings.read_bytes())
 
     assert reached_publish
+    assert injected_sharing_violations == 2
     assert result is not None and result.status == "modified"
     assert settings.read_bytes() == user
     assert None not in observations
