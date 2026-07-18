@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def send_with_dedupe(request: NotificationRequest, settings: Settings) -> None:
-    from lark_bot.lark.client import LarkBotClient
+    from lark_bot.modules.lark.lark_client import LarkBotClient
 
     validate_lark_settings(settings)
     store = SQLiteNotificationStore(settings.sqlite_path)

@@ -30,6 +30,13 @@ class InteractionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class InteractionKind(StrEnum):
+    EXEC_APPROVAL = "exec_approval"
+    FILE_CHANGE_APPROVAL = "file_change_approval"
+    PERMISSION_REQUEST = "permission_request"
+    USER_INPUT = "user_input"
+
+
 class SessionRef(BaseModel):
     session_id: str = Field(min_length=1)
     agent: AgentKind

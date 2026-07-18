@@ -17,11 +17,11 @@ from lark_bot.codex.app_server import CodexAppServerClient, ProcessExitedError, 
 from lark_bot.codex.interactive import InteractiveSessionManager
 from lark_bot.codex.models import CodexSession, SessionStatus
 from lark_bot.codex.orchestration import CodexOrchestrator
-from lark_bot.lark.client import LarkBotClient
-from lark_bot.lark.connection import LarkLongConnection
-from lark_bot.lark.messages import MessageFormat, RenderedMessage
-from lark_bot.lark.render import render_outbox_notification
-from lark_bot.lark.router import LarkControlRouter
+from lark_bot.modules.lark.lark_client import LarkBotClient
+from lark_bot.modules.lark.lark_connection import LarkLongConnection
+from lark_bot.modules.lark.lark_message import MessageFormat, RenderedMessage
+from lark_bot.modules.lark.lark_render import render_outbox_notification
+from lark_bot.modules.lark.lark_router import LarkControlRouter
 from lark_bot.storage.codex import SQLiteCodexStore
 
 MAX_HOOK_BYTES = 64 * 1024
