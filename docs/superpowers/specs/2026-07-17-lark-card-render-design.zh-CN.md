@@ -1,5 +1,8 @@
 # 飞书 Interactive 卡片渲染设计
 
+> **状态：已完成**（2026-07-18）  
+> 合入：PR #8 → `dev`（`feat/20260717-lark-card-render`，merge `906cbb4`）
+
 ## 目标
 
 将出站通知从纯 `msg_type: text` 升级为飞书 **interactive 卡片（schema 2.0）**，在手机端渲染 Markdown 与状态色标题。保留 `text` 作为配置回退。不改动 HITL 关联逻辑。
@@ -55,11 +58,22 @@ Event / Outbox item
 
 ## 验收
 
-1. CLI 默认发 interactive
-2. Daemon outbox 默认发 interactive
-3. `MESSAGE_FORMAT=text` 恢复纯文本
-4. 敏感信息仍脱敏
-5. pending interaction 仍绑定 `message_id`
-6. 单测无离线通过
+1. CLI 默认发 interactive — **通过**
+2. Daemon outbox 默认发 interactive — **通过**
+3. `MESSAGE_FORMAT=text` 恢复纯文本 — **通过**
+4. 敏感信息仍脱敏 — **通过**
+5. pending interaction 仍绑定 `message_id` — **通过**
+6. 单测无离线通过 — **通过**
+
+## 落地清单
+
+| 路径 | 说明 |
+|------|------|
+| `src/lark_bot/lark/messages.py` | `RenderedMessage`、`build_text_message`、`build_interactive_message` |
+| `src/lark_bot/lark/render.py` | `render_task_notification` / `render_outbox_notification` |
+| `src/lark_bot/lark/client.py` | `send_rendered` |
+| `src/lark_bot/config.py` | `message_format: card \| text`（`LARK_BOT_MESSAGE_FORMAT`） |
+| `src/lark_bot/server/daemon/app.py` | outbox 走 `send_rendered` |
+| `tests/test_lark_render.py` 等 | 渲染 / payload / 配置 / daemon 覆盖 |
 
 英文版：`docs/superpowers/specs/2026-07-17-lark-card-render-design.md`
