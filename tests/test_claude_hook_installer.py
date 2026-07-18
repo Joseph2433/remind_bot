@@ -149,10 +149,10 @@ def test_read_error_detail_does_not_expose_path(
 ) -> None:
     secret = "C:/private/project/settings.json"
 
-    def unavailable(_path: Path, *args: object, **kwargs: object) -> str:
+    def unavailable(_path: Path, *args: object, **kwargs: object) -> bytes:
         raise OSError(f"access denied: {secret}")
 
-    monkeypatch.setattr(Path, "read_text", unavailable)
+    monkeypatch.setattr(Path, "read_bytes", unavailable)
 
     result = check_hooks(workspace_tmp_path)
 
@@ -293,6 +293,51 @@ def test_atomic_write_cleans_temp_if_parent_changes_after_creation(
     assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
 
 
+def test_install_preserves_existing_target_changed_after_read(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text("{}", encoding="utf-8")
+    user_update = b'{"permissions":{"allow":["Bash"]}}'
+    real_write = installer._write_atomic
+
+    def raced_write(path: Path, value: dict[str, object], snapshot: object):
+        settings.write_bytes(user_update)
+        return real_write(path, value, snapshot)
+
+    monkeypatch.setattr(installer, "_write_atomic", raced_write)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "settings changed during update"
+    assert settings.read_bytes() == user_update
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
+def test_install_preserves_target_created_after_missing_read(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    user_update = b'{"permissions":{"deny":["Write"]}}'
+    real_write = installer._write_atomic
+
+    def raced_write(path: Path, value: dict[str, object], snapshot: object):
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_bytes(user_update)
+        return real_write(path, value, snapshot)
+
+    monkeypatch.setattr(installer, "_write_atomic", raced_write)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "settings changed during update"
+    assert settings.read_bytes() == user_update
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
 @pytest.mark.parametrize(
     "event_value",
     [
@@ -321,6 +366,11 @@ def test_invalid_managed_hook_structure_is_malformed_and_unchanged(
     "handler",
     [
         "not-an-object",
+        {},
+        {"command": "other"},
+        {"type": None},
+        {"type": ""},
+        {"type": "   "},
         {"type": "command", "command": ""},
         {"type": "command", "command": 7},
         {"type": "command", "command": "other", "args": "--bad"},

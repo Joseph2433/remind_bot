@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -26,12 +27,20 @@ HOOK_EVENTS = (
     "SessionEnd",
 )
 HookStatus = Literal["installed", "missing", "modified", "malformed"]
+_CONCURRENT_CHANGE_DETAIL = "settings changed during update"
 
 
 @dataclass(frozen=True)
 class HookCheck:
     status: HookStatus
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class TargetSnapshot:
+    exists: bool
+    identity: tuple[int, int, int, int, int, int] | None
+    digest: str | None
 
 
 def _settings_path(project: str | Path) -> Path:
@@ -60,6 +69,28 @@ def _parent_identity(path: Path) -> tuple[int, int, int, int]:
     return identity
 
 
+def _target_identity_from_stat(result: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    mtime_ns = getattr(result, "st_mtime_ns", int(result.st_mtime * 1_000_000_000))
+    return (
+        int(result.st_dev),
+        int(result.st_ino),
+        int(result.st_mode),
+        int(getattr(result, "st_file_attributes", 0)),
+        int(result.st_size),
+        int(mtime_ns),
+    )
+
+
+def _target_identity(path: Path) -> tuple[int, int, int, int, int, int] | None:
+    try:
+        result = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError("unable to inspect Claude Hook settings") from error
+    return _target_identity_from_stat(result)
+
+
 def _refuse_reparse(path: Path, identity: tuple[int, int, int, int] | None) -> None:
     if path.is_symlink() or (identity is not None and stat.S_ISLNK(identity[2])):
         raise ValueError("refusing to replace symlink Claude Hook settings")
@@ -73,32 +104,142 @@ def _refuse_symlinks(path: Path) -> None:
         _refuse_reparse(candidate, _path_identity(candidate))
 
 
-def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
+def _missing_snapshot() -> TargetSnapshot:
+    return TargetSnapshot(False, None, None)
+
+
+def _snapshot(raw: bytes, identity: tuple[int, int, int, int, int, int]) -> TargetSnapshot:
+    return TargetSnapshot(True, identity, hashlib.sha256(raw).hexdigest())
+
+
+def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None, TargetSnapshot]:
+    before = _target_identity(path)
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError:
-        return {}, HookCheck("missing")
-    except UnicodeDecodeError:
-        return None, HookCheck("malformed", "settings must be valid UTF-8")
+        if before is not None:
+            return None, HookCheck("modified", _CONCURRENT_CHANGE_DETAIL), _missing_snapshot()
+        return {}, HookCheck("missing"), _missing_snapshot()
     except OSError:
-        return None, HookCheck("malformed", "unable to read settings")
+        return None, HookCheck("malformed", "unable to read settings"), _missing_snapshot()
+    after = _target_identity(path)
+    if before is None or after != before:
+        return None, HookCheck("modified", _CONCURRENT_CHANGE_DETAIL), _missing_snapshot()
+    snapshot = _snapshot(raw, after)
     try:
-        value = json.loads(raw)
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, HookCheck("malformed", "settings must be valid UTF-8"), snapshot
+    try:
+        value = json.loads(text)
     except json.JSONDecodeError:
-        return None, HookCheck("malformed", "settings must be valid JSON")
+        return None, HookCheck("malformed", "settings must be valid JSON"), snapshot
     if not isinstance(value, dict):
-        return None, HookCheck("malformed", "settings JSON must be an object")
-    return value, None
+        return None, HookCheck("malformed", "settings JSON must be an object"), snapshot
+    return value, None, snapshot
 
 
-def _write_atomic(path: Path, value: dict[str, object]) -> None:
+def _supports_dir_fd_updates() -> bool:
+    supported = getattr(os, "supports_dir_fd", set())
+    return os.name != "nt" and all(
+        operation in supported for operation in (os.open, os.stat, os.replace, os.unlink)
+    )
+
+
+def _snapshot_from_path(path: Path) -> TargetSnapshot | None:
+    try:
+        before = _target_identity(path)
+    except ValueError:
+        return None
+    if before is None:
+        return _missing_snapshot()
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        after = _target_identity(path)
+    except ValueError:
+        return None
+    if after != before:
+        return None
+    return _snapshot(raw, after)
+
+
+def _snapshot_from_dir_fd(name: str, parent_fd: int) -> TargetSnapshot | None:
+    try:
+        before_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return _missing_snapshot()
+    except OSError:
+        return None
+    before = _target_identity_from_stat(before_stat)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError:
+        return None
+    try:
+        opened = _target_identity_from_stat(os.fstat(fd))
+        if opened != before:
+            return None
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            raw = handle.read()
+            after_opened = _target_identity_from_stat(os.fstat(handle.fileno()))
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    try:
+        after = _target_identity_from_stat(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+    except OSError:
+        return None
+    if after != before or after_opened != before:
+        return None
+    return _snapshot(raw, before)
+
+
+def _target_matches(path: Path, snapshot: TargetSnapshot, parent_fd: int | None) -> bool:
+    current = (
+        _snapshot_from_dir_fd(path.name, parent_fd)
+        if parent_fd is not None
+        else _snapshot_from_path(path)
+    )
+    return current == snapshot
+
+
+def _write_atomic(
+    path: Path,
+    value: dict[str, object],
+    target_snapshot: TargetSnapshot,
+) -> HookCheck | None:
     _refuse_symlinks(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _refuse_symlinks(path)
     parent_identity = _parent_identity(path.parent)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temp_path = Path(temp_name)
+    parent_fd: int | None = None
+    if _supports_dir_fd_updates():
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        parent_fd = os.open(path.parent, flags)
+        try:
+            opened_parent = os.fstat(parent_fd)
+            opened_identity = (
+                int(opened_parent.st_dev),
+                int(opened_parent.st_ino),
+                int(opened_parent.st_mode),
+                int(getattr(opened_parent, "st_file_attributes", 0)),
+            )
+        except Exception:
+            os.close(parent_fd)
+            raise
+        if opened_identity != parent_identity:
+            os.close(parent_fd)
+            raise ValueError("Claude Hook settings directory changed")
+    temp_path: Path | None = None
     try:
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temp_path = Path(temp_name)
+        temp_basename = temp_path.name
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             if _parent_identity(path.parent) != parent_identity:
                 raise ValueError("Claude Hook settings directory changed")
@@ -109,12 +250,34 @@ def _write_atomic(path: Path, value: dict[str, object]) -> None:
         _refuse_symlinks(path)
         if _parent_identity(path.parent) != parent_identity:
             raise ValueError("Claude Hook settings directory changed")
-        temp_path.replace(path)
+        if not _target_matches(path, target_snapshot, parent_fd):
+            return HookCheck("modified", _CONCURRENT_CHANGE_DETAIL)
+        if _parent_identity(path.parent) != parent_identity:
+            raise ValueError("Claude Hook settings directory changed")
+        if not _target_matches(path, target_snapshot, parent_fd):
+            return HookCheck("modified", _CONCURRENT_CHANGE_DETAIL)
+        if parent_fd is not None:
+            os.replace(
+                temp_basename,
+                path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+        else:
+            os.replace(temp_path, path)
+        return None
     finally:
         try:
-            temp_path.unlink()
+            if temp_path is not None:
+                if parent_fd is not None:
+                    os.unlink(temp_path.name, dir_fd=parent_fd)
+                else:
+                    temp_path.unlink()
         except FileNotFoundError:
             pass
+        finally:
+            if parent_fd is not None:
+                os.close(parent_fd)
 
 
 def _hooks(value: dict[str, object], *, create: bool) -> dict[str, object] | None:
@@ -172,7 +335,10 @@ def _validate_managed_hooks(value: dict[str, object]) -> HookCheck | None:
             for handler in handlers:
                 if not isinstance(handler, dict):
                     return HookCheck("malformed", f"hooks.{event} handlers must be objects")
-                if handler.get("type") != "command":
+                handler_type = handler.get("type")
+                if not isinstance(handler_type, str) or not handler_type.strip():
+                    return HookCheck("malformed", f"hooks.{event} handler type must be a nonempty string")
+                if handler_type != "command":
                     continue
                 command = handler.get("command")
                 if not isinstance(command, str) or not command.strip():
@@ -203,7 +369,7 @@ def _has_all_owned(value: dict[str, object]) -> bool:
 
 def check_hooks(project: str | Path) -> HookCheck:
     path = _settings_path(project)
-    value, issue = _read(path)
+    value, issue, _snapshot = _read(path)
     if issue is not None and issue.status == "missing":
         return issue
     if issue is not None:
@@ -225,8 +391,8 @@ def check_hooks(project: str | Path) -> HookCheck:
 def install_hooks(project: str | Path) -> HookCheck:
     path = _settings_path(project)
     _refuse_symlinks(path)
-    value, issue = _read(path)
-    if issue is not None and issue.status == "malformed":
+    value, issue, target_snapshot = _read(path)
+    if issue is not None and issue.status in {"malformed", "modified"}:
         return issue
     if value is None:
         return HookCheck("malformed", "settings JSON must be an object")
@@ -253,14 +419,16 @@ def install_hooks(project: str | Path) -> HookCheck:
             return HookCheck("malformed", f"hooks.{event} must be an array")
         changed = True
     if changed:
-        _write_atomic(path, value)
+        write_issue = _write_atomic(path, value, target_snapshot)
+        if write_issue is not None:
+            return write_issue
     return HookCheck("installed")
 
 
 def uninstall_hooks(project: str | Path) -> HookCheck:
     path = _settings_path(project)
     _refuse_symlinks(path)
-    value, issue = _read(path)
+    value, issue, target_snapshot = _read(path)
     if issue is not None:
         return issue
     assert value is not None
@@ -298,5 +466,7 @@ def uninstall_hooks(project: str | Path) -> HookCheck:
         value.pop("hooks", None)
         changed = True
     if changed:
-        _write_atomic(path, value)
+        write_issue = _write_atomic(path, value, target_snapshot)
+        if write_issue is not None:
+            return write_issue
     return check_hooks(project)
