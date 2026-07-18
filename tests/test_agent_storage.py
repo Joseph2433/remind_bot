@@ -34,8 +34,8 @@ def test_shared_schema_and_session_round_trip():
             "agent_audit",
         } <= tables
         with store._connection() as connection:
-            assert {row["name"] for row in connection.execute("PRAGMA table_info(agent_sessions)")} >= {"id", "session_id"}
-            assert {row["name"] for row in connection.execute("PRAGMA table_info(agent_interactions)")} >= {"id", "interaction_id"}
+            assert "id" in {row["name"] for row in connection.execute("PRAGMA table_info(agent_sessions)")}
+            assert "id" in {row["name"] for row in connection.execute("PRAGMA table_info(agent_interactions)")}
         assert store.get_session("s1") == session
         assert store.list_sessions(agent=AgentKind.CLAUDE) == [session]
 

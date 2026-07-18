@@ -795,7 +795,7 @@ def test_schema_version_and_required_indexes_are_installed():
             )
         }
 
-    assert version == 3
+    assert version == 4
     assert {
         "idx_codex_sessions_status",
         "idx_codex_interactions_status",
@@ -872,7 +872,7 @@ def test_schema_v1_migration_canonicalizes_request_ids_and_preserves_reuse(
     assert store.get_interaction(interaction.id).request_id == '"legacy-id"'
     with store._connection() as migrated:
         assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 4
         columns = {
             row[1]
             for row in migrated.execute("PRAGMA table_info(notification_outbox)")

@@ -51,33 +51,31 @@ def _legacy_schema(connection: sqlite3.Connection) -> None:
         """
     for statement in sql.split(";"):
         if statement.strip(): connection.execute(statement)
-
-
 def _canonical_schema(connection: sqlite3.Connection) -> None:
     sql = """
         CREATE TABLE IF NOT EXISTS agent_sessions (
-            id TEXT UNIQUE NOT NULL, session_id TEXT PRIMARY KEY, agent TEXT NOT NULL, name TEXT NOT NULL,
+            id TEXT PRIMARY KEY, agent TEXT NOT NULL, name TEXT NOT NULL,
             conversation_id TEXT, turn_id TEXT, cwd TEXT NOT NULL DEFAULT '', model TEXT,
             sandbox TEXT NOT NULL DEFAULT '', permission_mode TEXT, status TEXT NOT NULL,
             summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS agent_interactions (
-            id TEXT UNIQUE NOT NULL, interaction_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(session_id),
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id),
             request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
             lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
             resolved_at TEXT, expires_at TEXT, actor_id TEXT, decision TEXT
         );
         CREATE TABLE IF NOT EXISTS agent_event_dedupe (event_id TEXT PRIMARY KEY, received_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_notification_outbox (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(session_id),
-            agent TEXT, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(interaction_id),
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
+            agent TEXT, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(id),
             notification_type TEXT NOT NULL, payload_summary TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
             sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS agent_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(session_id),
-            interaction_id TEXT REFERENCES agent_interactions(interaction_id), event_type TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
+            interaction_id TEXT REFERENCES agent_interactions(id), event_type TEXT NOT NULL,
             actor_id TEXT, detail_summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_interactions_pending_request
@@ -96,28 +94,28 @@ def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
         CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_insert
         AFTER INSERT ON agent_sessions WHEN NEW.agent='codex' BEGIN
           INSERT OR IGNORE INTO codex_sessions(id,thread_id,turn_id,name,cwd,model,sandbox,status,summary,created_at,updated_at)
-          VALUES(NEW.session_id,NEW.conversation_id,NEW.turn_id,NEW.name,NEW.cwd,NEW.model,NEW.sandbox,NEW.status,NEW.summary,NEW.created_at,NEW.updated_at);
+          VALUES(NEW.id,NEW.conversation_id,NEW.turn_id,NEW.name,NEW.cwd,NEW.model,NEW.sandbox,NEW.status,NEW.summary,NEW.created_at,NEW.updated_at);
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_update
         AFTER UPDATE ON agent_sessions WHEN NEW.agent='codex' BEGIN
-          UPDATE codex_sessions SET thread_id=NEW.conversation_id,turn_id=NEW.turn_id,name=NEW.name,cwd=NEW.cwd,model=NEW.model,sandbox=NEW.sandbox,status=NEW.status,summary=NEW.summary,created_at=NEW.created_at,updated_at=NEW.updated_at WHERE id=NEW.session_id;
+          UPDATE codex_sessions SET thread_id=NEW.conversation_id,turn_id=NEW.turn_id,name=NEW.name,cwd=NEW.cwd,model=NEW.model,sandbox=NEW.sandbox,status=NEW.status,summary=NEW.summary,created_at=NEW.created_at,updated_at=NEW.updated_at WHERE id=NEW.id;
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_delete
         AFTER DELETE ON agent_sessions WHEN OLD.agent='codex' BEGIN
-          DELETE FROM codex_sessions WHERE id=OLD.session_id;
+          DELETE FROM codex_sessions WHERE id=OLD.id;
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_insert
-        AFTER INSERT ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE session_id=NEW.session_id)='codex' BEGIN
+        AFTER INSERT ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
           INSERT OR IGNORE INTO codex_interactions(id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-          VALUES(NEW.interaction_id,NEW.session_id,NEW.request_id,NEW.kind,NEW.status,NEW.lark_message_id,NEW.payload_summary,NEW.requested_at,NEW.resolved_at,COALESCE(NEW.expires_at,NEW.requested_at),NEW.actor_id,NEW.decision);
+          VALUES(NEW.id,NEW.session_id,NEW.request_id,NEW.kind,NEW.status,NEW.lark_message_id,NEW.payload_summary,NEW.requested_at,NEW.resolved_at,COALESCE(NEW.expires_at,NEW.requested_at),NEW.actor_id,NEW.decision);
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_update
-        AFTER UPDATE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE session_id=NEW.session_id)='codex' BEGIN
-          UPDATE codex_interactions SET request_id=NEW.request_id,kind=NEW.kind,status=NEW.status,lark_message_id=NEW.lark_message_id,payload_summary=NEW.payload_summary,requested_at=NEW.requested_at,resolved_at=NEW.resolved_at,expires_at=COALESCE(NEW.expires_at,NEW.requested_at),actor_id=NEW.actor_id,decision=NEW.decision WHERE id=NEW.interaction_id;
+        AFTER UPDATE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
+          UPDATE codex_interactions SET request_id=NEW.request_id,kind=NEW.kind,status=NEW.status,lark_message_id=NEW.lark_message_id,payload_summary=NEW.payload_summary,requested_at=NEW.requested_at,resolved_at=NEW.resolved_at,expires_at=COALESCE(NEW.expires_at,NEW.requested_at),actor_id=NEW.actor_id,decision=NEW.decision WHERE id=NEW.id;
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_delete
-        AFTER DELETE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE session_id=OLD.session_id)='codex' BEGIN
-          DELETE FROM codex_interactions WHERE id=OLD.interaction_id;
+        AFTER DELETE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=OLD.session_id)='codex' BEGIN
+          DELETE FROM codex_interactions WHERE id=OLD.id;
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_outbox_codex_insert
         AFTER INSERT ON agent_notification_outbox WHEN NEW.agent='codex' BEGIN
@@ -129,7 +127,7 @@ def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
           UPDATE notification_outbox SET session_id=NEW.session_id,interaction_id=NEW.interaction_id,notification_type=NEW.notification_type,payload_summary=NEW.payload_summary,attempt_count=NEW.attempt_count,next_attempt_at=NEW.next_attempt_at,sent_at=NEW.sent_at,last_error=NEW.last_error,created_at=NEW.created_at,agent=NEW.agent,session_name=NEW.session_name WHERE id=NEW.id;
         END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_audit_codex_insert
-        AFTER INSERT ON agent_audit WHEN (SELECT agent FROM agent_sessions WHERE session_id=NEW.session_id)='codex' BEGIN
+        AFTER INSERT ON agent_audit WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
           INSERT OR IGNORE INTO codex_audit(id,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES(NEW.id,NEW.session_id,NEW.interaction_id,NEW.event_type,NEW.actor_id,NEW.detail_summary,NEW.created_at);
         END;
         """
@@ -151,13 +149,13 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         request_expr = "json_quote(request_id)" if version == 1 else "request_id"
         connection.execute(
             """INSERT OR IGNORE INTO agent_sessions
-            (id,session_id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
-            SELECT id,id,'codex',name,thread_id,turn_id,cwd,model,sandbox,NULL,status,summary,created_at,updated_at FROM codex_sessions"""
+            (id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
+            SELECT id,'codex',name,thread_id,turn_id,cwd,model,sandbox,NULL,status,summary,created_at,updated_at FROM codex_sessions"""
         )
         connection.execute(
             """INSERT OR IGNORE INTO agent_interactions
-            (id,interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-            SELECT id,id,session_id,""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
+            (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+            SELECT id,session_id,""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
         )
         connection.execute("INSERT OR IGNORE INTO agent_event_dedupe SELECT event_id,received_at FROM codex_event_dedupe")
         connection.execute(

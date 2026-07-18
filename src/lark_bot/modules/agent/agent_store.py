@@ -54,13 +54,13 @@ class SQLiteAgentStore:
     def create(self, session: AgentSession) -> None:
         with self._connection() as c:
             c.execute("""INSERT INTO agent_sessions
-                (id,session_id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", session_values(session))
+                (id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", session_values(session))
 
     create_session = create
 
     def get(self, session_id: str, *, agent: AgentKind | str | None = None) -> AgentSession | None:
-        query = "SELECT * FROM agent_sessions WHERE session_id = ?"
+        query = "SELECT * FROM agent_sessions WHERE id = ?"
         args: list[object] = [session_id]
         if agent is not None:
             query += " AND agent = ?"; args.append(AgentKind(agent).value)
@@ -74,7 +74,7 @@ class SQLiteAgentStore:
         query = "SELECT * FROM agent_sessions WHERE conversation_id = ?"; args: list[object] = [conversation_id]
         if agent is not None:
             query += " AND agent = ?"; args.append(AgentKind(agent).value)
-        query += " ORDER BY created_at, session_id LIMIT 1"
+        query += " ORDER BY created_at, id LIMIT 1"
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return session_from_row(row) if row else None
 
@@ -85,7 +85,7 @@ class SQLiteAgentStore:
         if status is not None: clauses.append("status = ?"); args.append(SessionStatus(status).value)
         if agent is not None: clauses.append("agent = ?"); args.append(AgentKind(agent).value)
         if clauses: query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY created_at, session_id"
+        query += " ORDER BY created_at, id"
         with self._connection() as c: rows = c.execute(query, args).fetchall()
         return [session_from_row(row) for row in rows]
 
@@ -93,7 +93,7 @@ class SQLiteAgentStore:
 
     def update(self, session: AgentSession) -> None:
         with self._connection() as c:
-            c.execute("""UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE session_id=?""", session_values(session)[2:] + (session.session_id,))
+            c.execute("""UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE id=?""", session_values(session)[1:] + (session.session_id,))
 
     update_session = update
 
@@ -105,7 +105,7 @@ class SQLiteAgentStore:
         if turn_id is not _UNSET: assignments.append("turn_id = ?"); args.append(turn_id)
         placeholders = ",".join("?" for _ in expected_statuses); args.extend([session_id, *(SessionStatus(s).value for s in expected_statuses)])
         with self._connection() as c:
-            cur = c.execute(f"UPDATE agent_sessions SET {', '.join(assignments)} WHERE session_id = ? AND status IN ({placeholders})", args)
+            cur = c.execute(f"UPDATE agent_sessions SET {', '.join(assignments)} WHERE id = ? AND status IN ({placeholders})", args)
         return cur.rowcount == 1
 
     update_session_if_status = update_if_status
@@ -115,19 +115,19 @@ class SQLiteAgentStore:
             raise ValueError("pending interaction cannot contain resolution metadata")
         with self._connection() as c:
             c.execute("""INSERT INTO agent_interactions
-                (id,interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
 
     def get_interaction(self, interaction_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
         query = "SELECT i.* FROM agent_interactions i"; args: list[object] = [interaction_id]
-        if agent is not None: query += " JOIN agent_sessions s ON s.session_id=i.session_id AND s.agent=?"; args.insert(0, AgentKind(agent).value)
-        query += " WHERE i.interaction_id = ?"
+        if agent is not None: query += " JOIN agent_sessions s ON s.id=i.session_id AND s.agent=?"; args.insert(0, AgentKind(agent).value)
+        query += " WHERE i.id = ?"
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return interaction_from_row(row) if row else None
 
     def get_pending_interaction(self, request_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
         query = "SELECT i.* FROM agent_interactions i"; args: list[object] = []
-        if agent is not None: query += " JOIN agent_sessions s ON s.session_id=i.session_id AND s.agent=?"; args.append(AgentKind(agent).value)
+        if agent is not None: query += " JOIN agent_sessions s ON s.id=i.session_id AND s.agent=?"; args.append(AgentKind(agent).value)
         query += " WHERE i.request_id = ? AND i.status = ?"; args.extend([request_id, InteractionStatus.PENDING.value])
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return interaction_from_row(row) if row else None
@@ -135,7 +135,7 @@ class SQLiteAgentStore:
     def get_pending_interaction_by_lark_message_id(self, message_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
         if not message_id: return None
         query = "SELECT i.* FROM agent_interactions i"; args: list[object] = []
-        if agent is not None: query += " JOIN agent_sessions s ON s.session_id=i.session_id AND s.agent=?"; args.append(AgentKind(agent).value)
+        if agent is not None: query += " JOIN agent_sessions s ON s.id=i.session_id AND s.agent=?"; args.append(AgentKind(agent).value)
         query += " WHERE i.lark_message_id = ? AND i.status = ?"; args.extend([message_id, InteractionStatus.PENDING.value])
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return interaction_from_row(row) if row else None
@@ -145,22 +145,22 @@ class SQLiteAgentStore:
         try:
             with self._connection() as c:
                 c.execute("BEGIN IMMEDIATE")
-                cur = c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE session_id=? AND status IN (?,?,?,?,?)", (SessionStatus(waiting_status).value,serialize_datetime(updated_at),interaction.session_id,*[v.value for v in _ACTIVE]))
+                cur = c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE id=? AND status IN (?,?,?,?,?)", (SessionStatus(waiting_status).value,serialize_datetime(updated_at),interaction.session_id,*[v.value for v in _ACTIVE]))
                 if cur.rowcount != 1: return False
-                c.execute("""INSERT INTO agent_interactions (id,interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                c.execute("""INSERT INTO agent_interactions (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
         except sqlite3.IntegrityError: return False
         return True
 
     def attach_lark_message_id(self, interaction_id: str, message_id: str) -> bool:
-        with self._connection() as c: cur = c.execute("UPDATE agent_interactions SET lark_message_id=? WHERE interaction_id=? AND status=? AND lark_message_id IS NULL", (message_id,interaction_id,InteractionStatus.PENDING.value))
+        with self._connection() as c: cur = c.execute("UPDATE agent_interactions SET lark_message_id=? WHERE id=? AND status=? AND lark_message_id IS NULL", (message_id,interaction_id,InteractionStatus.PENDING.value))
         return cur.rowcount == 1
 
     def resolve_interaction(self, interaction_id: str, *, decision: str, actor_id: str, resolved_at: datetime | None = None) -> bool:
         with self._connection() as c:
-            row = c.execute("SELECT kind FROM agent_interactions WHERE interaction_id=?", (interaction_id,)).fetchone()
+            row = c.execute("SELECT kind FROM agent_interactions WHERE id=?", (interaction_id,)).fetchone()
             if not row: return False
             normalized = self._normalize_decision(row["kind"], decision)
-            cur = c.execute("UPDATE agent_interactions SET status=?,decision=?,actor_id=?,resolved_at=? WHERE interaction_id=? AND status=?", (InteractionStatus.RESOLVED.value,normalized,actor_id,serialize_datetime(resolved_at or datetime.now(timezone.utc)),interaction_id,InteractionStatus.PENDING.value))
+            cur = c.execute("UPDATE agent_interactions SET status=?,decision=?,actor_id=?,resolved_at=? WHERE id=? AND status=?", (InteractionStatus.RESOLVED.value,normalized,actor_id,serialize_datetime(resolved_at or datetime.now(timezone.utc)),interaction_id,InteractionStatus.PENDING.value))
         return cur.rowcount == 1
 
     def resolve_interaction_and_refresh_session(self, interaction_id: str, *, decision: str, actor_id: str, updated_at: datetime, status: InteractionStatus = InteractionStatus.RESOLVED) -> bool:
@@ -168,33 +168,33 @@ class SQLiteAgentStore:
         if status not in {InteractionStatus.RESOLVED, InteractionStatus.EXPIRED}: raise ValueError("status must be resolved or expired")
         stamp = serialize_datetime(updated_at)
         with self._connection() as c:
-            c.execute("BEGIN IMMEDIATE"); row = c.execute("SELECT kind,session_id FROM agent_interactions WHERE interaction_id=?", (interaction_id,)).fetchone()
+            c.execute("BEGIN IMMEDIATE"); row = c.execute("SELECT kind,session_id FROM agent_interactions WHERE id=?", (interaction_id,)).fetchone()
             if not row: return False
             normalized = self._normalize_decision(row["kind"], decision)
-            cur = c.execute("UPDATE agent_interactions SET status=?,decision=?,actor_id=?,resolved_at=? WHERE interaction_id=? AND status=?", (status.value,normalized,actor_id,stamp,interaction_id,InteractionStatus.PENDING.value))
+            cur = c.execute("UPDATE agent_interactions SET status=?,decision=?,actor_id=?,resolved_at=? WHERE id=? AND status=?", (status.value,normalized,actor_id,stamp,interaction_id,InteractionStatus.PENDING.value))
             if cur.rowcount != 1: return False
             pending = c.execute("SELECT kind FROM agent_interactions WHERE session_id=? AND status=?", (row["session_id"],InteractionStatus.PENDING.value)).fetchall()
             next_status = SessionStatus.WAITING_FOR_INPUT if any(p["kind"] == InteractionKind.USER_INPUT.value for p in pending) else (SessionStatus.WAITING_FOR_APPROVAL if pending else SessionStatus.RUNNING)
-            c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE session_id=? AND status IN (?,?,?,?,?)", (next_status.value,stamp,row["session_id"],*[v.value for v in _ACTIVE]))
+            c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE id=? AND status IN (?,?,?,?,?)", (next_status.value,stamp,row["session_id"],*[v.value for v in _ACTIVE]))
         return True
 
     def cancel_interaction_and_refresh_session(self, interaction_id: str, *, updated_at: datetime) -> bool:
         stamp = serialize_datetime(updated_at)
         with self._connection() as c:
             c.execute("BEGIN IMMEDIATE")
-            row = c.execute("SELECT session_id FROM agent_interactions WHERE interaction_id=?", (interaction_id,)).fetchone()
+            row = c.execute("SELECT session_id FROM agent_interactions WHERE id=?", (interaction_id,)).fetchone()
             if not row:
                 return False
-            cur = c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE interaction_id=? AND status=?", (InteractionStatus.CANCELLED.value, stamp, interaction_id, InteractionStatus.PENDING.value))
+            cur = c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE id=? AND status=?", (InteractionStatus.CANCELLED.value, stamp, interaction_id, InteractionStatus.PENDING.value))
             if cur.rowcount != 1:
                 return False
             pending = c.execute("SELECT kind FROM agent_interactions WHERE session_id=? AND status=?", (row["session_id"], InteractionStatus.PENDING.value)).fetchall()
             next_status = SessionStatus.WAITING_FOR_INPUT if any(p["kind"] == InteractionKind.USER_INPUT.value for p in pending) else (SessionStatus.WAITING_FOR_APPROVAL if pending else SessionStatus.RUNNING)
-            c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE session_id=? AND status IN (?,?,?,?,?)", (next_status.value, stamp, row["session_id"], *[v.value for v in _ACTIVE]))
+            c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE id=? AND status IN (?,?,?,?,?)", (next_status.value, stamp, row["session_id"], *[v.value for v in _ACTIVE]))
         return True
 
     def expire_interaction(self, interaction_id: str, *, resolved_at: datetime | None = None) -> bool:
-        with self._connection() as c: cur = c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE interaction_id=? AND status=?", (InteractionStatus.EXPIRED.value,serialize_datetime(resolved_at or datetime.now(timezone.utc)),interaction_id,InteractionStatus.PENDING.value))
+        with self._connection() as c: cur = c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE id=? AND status=?", (InteractionStatus.EXPIRED.value,serialize_datetime(resolved_at or datetime.now(timezone.utc)),interaction_id,InteractionStatus.PENDING.value))
         return cur.rowcount == 1
 
     def cancel_pending_interactions(self, session_id: str, *, status: InteractionStatus, resolved_at: datetime | None = None) -> list[str]:
@@ -202,7 +202,7 @@ class SQLiteAgentStore:
         if status not in {InteractionStatus.EXPIRED, InteractionStatus.CANCELLED}: raise ValueError("status must be expired or cancelled")
         stamp = serialize_datetime(resolved_at or datetime.now(timezone.utc))
         with self._connection() as c:
-            c.execute("BEGIN IMMEDIATE"); ids = [row["interaction_id"] for row in c.execute("SELECT interaction_id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY interaction_id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (status.value,stamp,session_id,InteractionStatus.PENDING.value))
+            c.execute("BEGIN IMMEDIATE"); ids = [row["id"] for row in c.execute("SELECT id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (status.value,stamp,session_id,InteractionStatus.PENDING.value))
         return ids
 
     def claim_session_terminal(self, session_id: str, terminal_status: SessionStatus, summary: str, pending_status: InteractionStatus, updated_at: datetime) -> list[str] | None:
@@ -210,18 +210,18 @@ class SQLiteAgentStore:
         if InteractionStatus(pending_status) not in {InteractionStatus.EXPIRED, InteractionStatus.CANCELLED}: raise ValueError("pending_status must be expired or cancelled")
         stamp = serialize_datetime(updated_at)
         with self._connection() as c:
-            c.execute("BEGIN IMMEDIATE"); cur = c.execute("UPDATE agent_sessions SET status=?,summary=?,updated_at=? WHERE session_id=? AND status IN (?,?,?,?,?)", (SessionStatus(terminal_status).value,safe_summary(summary),stamp,session_id,*[v.value for v in _ACTIVE]))
+            c.execute("BEGIN IMMEDIATE"); cur = c.execute("UPDATE agent_sessions SET status=?,summary=?,updated_at=? WHERE id=? AND status IN (?,?,?,?,?)", (SessionStatus(terminal_status).value,safe_summary(summary),stamp,session_id,*[v.value for v in _ACTIVE]))
             if cur.rowcount != 1: return None
-            ids = [r["interaction_id"] for r in c.execute("SELECT interaction_id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY interaction_id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (InteractionStatus(pending_status).value,stamp,session_id,InteractionStatus.PENDING.value))
+            ids = [r["id"] for r in c.execute("SELECT id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (InteractionStatus(pending_status).value,stamp,session_id,InteractionStatus.PENDING.value))
         return ids
 
     def finish_interactive_turn(self, session_id: str, *, turn_id: str, summary: str, updated_at: datetime) -> list[str] | None:
         if not turn_id: raise ValueError("turn_id must be a non-empty string")
         stamp = serialize_datetime(updated_at)
         with self._connection() as c:
-            c.execute("BEGIN IMMEDIATE"); cur = c.execute("UPDATE agent_sessions SET status=?,turn_id=NULL,summary=?,updated_at=? WHERE session_id=? AND turn_id=? AND status IN (?,?,?,?,?)", (SessionStatus.RUNNING.value,safe_summary(summary),stamp,session_id,turn_id,*[v.value for v in _ACTIVE]))
+            c.execute("BEGIN IMMEDIATE"); cur = c.execute("UPDATE agent_sessions SET status=?,turn_id=NULL,summary=?,updated_at=? WHERE id=? AND turn_id=? AND status IN (?,?,?,?,?)", (SessionStatus.RUNNING.value,safe_summary(summary),stamp,session_id,turn_id,*[v.value for v in _ACTIVE]))
             if cur.rowcount != 1: return None
-            ids = [r["interaction_id"] for r in c.execute("SELECT interaction_id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY interaction_id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (InteractionStatus.CANCELLED.value,stamp,session_id,InteractionStatus.PENDING.value))
+            ids = [r["id"] for r in c.execute("SELECT id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (InteractionStatus.CANCELLED.value,stamp,session_id,InteractionStatus.PENDING.value))
         return ids
 
     def record_event_once(self, event_id: str, *, received_at: datetime | None = None) -> bool:
@@ -232,7 +232,7 @@ class SQLiteAgentStore:
         created = created_at or datetime.now(timezone.utc); due = next_attempt_at or created; kind = AgentKind(agent).value if agent is not None else None
         with self._connection() as c:
             if session_name is None and session_id:
-                row = c.execute("SELECT name FROM agent_sessions WHERE session_id=?", (session_id,)).fetchone(); session_name = row[0] if row else None
+                row = c.execute("SELECT name FROM agent_sessions WHERE id=?", (session_id,)).fetchone(); session_name = row[0] if row else None
             cur = c.execute("INSERT INTO agent_notification_outbox(session_id,agent,session_name,interaction_id,notification_type,payload_summary,next_attempt_at,created_at) VALUES (?,?,?,?,?,?,?,?)", (session_id,kind,session_name,interaction_id,notification_type,safe_summary(payload_summary),serialize_datetime(due),serialize_datetime(created)))
         return int(cur.lastrowid)
 
@@ -259,11 +259,11 @@ class SQLiteAgentStore:
         stamp = serialize_datetime(now or datetime.now(timezone.utc)); args: list[object] = [*[v.value for v in _ACTIVE]]; where = "status IN (?,?,?,?,?)"
         if agent is not None: where += " AND agent=?"; args.append(AgentKind(agent).value)
         with self._connection() as c:
-            c.execute("BEGIN IMMEDIATE"); sessions = [r["session_id"] for r in c.execute(f"SELECT session_id FROM agent_sessions WHERE {where} ORDER BY session_id", args).fetchall()]
+            c.execute("BEGIN IMMEDIATE"); sessions = [r["id"] for r in c.execute(f"SELECT id FROM agent_sessions WHERE {where} ORDER BY id", args).fetchall()]
             ia_args: list[object] = [InteractionStatus.PENDING.value]; ia_where = "i.status=?"
             if agent is not None: ia_where += " AND s.agent=?"; ia_args.append(AgentKind(agent).value)
-            interactions = [r["interaction_id"] for r in c.execute(f"SELECT i.interaction_id FROM agent_interactions i JOIN agent_sessions s ON s.session_id=i.session_id WHERE {ia_where} ORDER BY i.interaction_id", ia_args).fetchall()]
-            c.execute(f"UPDATE agent_sessions SET status=?,updated_at=? WHERE {where}", [SessionStatus.INTERRUPTED.value,stamp,*args]); c.execute(f"UPDATE agent_interactions SET status=?,resolved_at=? WHERE interaction_id IN ({','.join('?' for _ in interactions)})", [InteractionStatus.EXPIRED.value,stamp,*interactions]) if interactions else None
+            interactions = [r["id"] for r in c.execute(f"SELECT i.id FROM agent_interactions i JOIN agent_sessions s ON s.id=i.session_id WHERE {ia_where} ORDER BY i.id", ia_args).fetchall()]
+            c.execute(f"UPDATE agent_sessions SET status=?,updated_at=? WHERE {where}", [SessionStatus.INTERRUPTED.value,stamp,*args]); c.execute(f"UPDATE agent_interactions SET status=?,resolved_at=? WHERE id IN ({','.join('?' for _ in interactions)})", [InteractionStatus.EXPIRED.value,stamp,*interactions]) if interactions else None
         return StartupReconciliationResult(session_ids=sessions,interaction_ids=interactions)
 
     def record_audit(self, *, event_type: str, detail_summary: str = "", session_id: str | None = None, interaction_id: str | None = None, actor_id: str | None = None, created_at: datetime | None = None) -> int:
@@ -271,7 +271,7 @@ class SQLiteAgentStore:
         return int(cur.lastrowid)
 
     def list_audit(self, *, session_id: str | None = None, agent: AgentKind | str | None = None) -> list[AgentAuditEntry]:
-        query = "SELECT a.* FROM agent_audit a LEFT JOIN agent_sessions s ON s.session_id=a.session_id"; clauses: list[str] = []; args: list[object] = []
+        query = "SELECT a.* FROM agent_audit a LEFT JOIN agent_sessions s ON s.id=a.session_id"; clauses: list[str] = []; args: list[object] = []
         if session_id is not None: clauses.append("a.session_id=?"); args.append(session_id)
         if agent is not None: clauses.append("(s.agent=? OR a.session_id IS NULL)"); args.append(AgentKind(agent).value)
         if clauses: query += " WHERE " + " AND ".join(clauses)
