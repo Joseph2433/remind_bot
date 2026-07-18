@@ -37,6 +37,15 @@ class InteractionKind(StrEnum):
     USER_INPUT = "user_input"
 
 
+class InteractionDecision(StrEnum):
+    APPROVED = "approved"
+    DENIED = "denied"
+    ACCEPT = "accept"
+    DECLINE = "decline"
+    GRANTED = "granted"
+    SUBMITTED = "submitted"
+
+
 class SessionRef(BaseModel):
     session_id: str = Field(min_length=1)
     agent: AgentKind
@@ -48,7 +57,7 @@ class AgentSession(SessionRef):
     turn_id: str | None = None
     cwd: str = ""
     model: str | None = None
-    sandbox: str = ""
+    sandbox: str = "workspace-write"
     permission_mode: str | None = None
     status: SessionStatus = SessionStatus.STARTING
     summary: str = ""
@@ -73,9 +82,9 @@ class AgentInteraction(BaseModel):
     payload_summary: str = ""
     requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: datetime | None = None
-    expires_at: datetime | None = None
+    expires_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     actor_id: str | None = None
-    decision: str | None = None
+    decision: InteractionDecision | None = None
 
     @field_validator("requested_at", "resolved_at", "expires_at")
     @classmethod

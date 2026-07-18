@@ -3,6 +3,7 @@ import inspect
 import sqlite3
 import threading
 from uuid import uuid4
+import pytest
 
 from lark_bot.modules.agent.agent_model import (
     AgentKind,
@@ -65,6 +66,66 @@ def test_shared_schema_and_session_round_trip():
             assert "id" in {row["name"] for row in connection.execute("PRAGMA table_info(agent_interactions)")}
         assert store.get_session("s1") == session
         assert store.list_sessions(agent=AgentKind.CLAUDE) == [session]
+
+
+def test_provider_scoped_mutators_cannot_touch_claude_rows():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cx", agent=AgentKind.CODEX, name="cx", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+        store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+        store.create_interaction(AgentInteraction(interaction_id="ci", session_id="cl", request_id="cr", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now))
+        assert store.get_interaction("ci", agent=AgentKind.CODEX) is None
+        assert not store.attach_lark_message_id("ci", "m", agent=AgentKind.CODEX)
+        assert not store.resolve_interaction("ci", decision="approved", actor_id="x", agent=AgentKind.CODEX)
+        assert not store.cancel_interaction_and_refresh_session("ci", updated_at=now, agent=AgentKind.CODEX)
+        assert not store.expire_interaction("ci", resolved_at=now, agent=AgentKind.CODEX)
+        assert store.get_session("cl", agent=AgentKind.CODEX) is None
+        assert not store.update_session_if_status("cl", (SessionStatus.RUNNING,), status=SessionStatus.FAILED, agent=AgentKind.CODEX)
+        assert store.get_session("cl").status is SessionStatus.RUNNING
+
+
+def test_outbox_requires_canonical_agent_and_scopes_mutators():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+        with pytest.raises(ValueError):
+            store.enqueue_outbox(notification_type="n", payload_summary="x")
+        with pytest.raises(ValueError):
+            store.enqueue_outbox(notification_type="n", payload_summary="x", session_id="cl", agent=AgentKind.CODEX)
+        outbox_id = store.enqueue_outbox(notification_type="n", payload_summary="x", session_id="cl", agent=AgentKind.CLAUDE, created_at=now)
+        assert store.get_outbox_item(outbox_id, agent=AgentKind.CODEX) is None
+        assert not store.mark_outbox_sent(outbox_id, agent=AgentKind.CODEX)
+        assert not store.record_outbox_failure(outbox_id, error="x", next_attempt_at=now, agent=AgentKind.CODEX)
+
+
+def test_model_and_schema_defaults_are_non_nullable():
+    now = datetime.now(timezone.utc)
+    session = AgentSession(session_id="s", agent=AgentKind.CODEX, name="n")
+    assert session.sandbox == "workspace-write"
+    interaction = AgentInteraction(interaction_id="i", session_id="s", request_id="r", kind=InteractionKind.EXEC_APPROVAL)
+    assert interaction.expires_at is not None
+    with SQLiteAgentStore(":memory:") as store:
+        with store._connection() as connection:
+            session_columns = {row[1]: row for row in connection.execute("PRAGMA table_info(agent_sessions)")}
+            interaction_columns = {row[1]: row for row in connection.execute("PRAGMA table_info(agent_interactions)")}
+        assert session_columns["sandbox"][4] == "'workspace-write'"
+        assert interaction_columns["expires_at"][3] == 1
+
+
+def test_formal_agent_store_contract_is_exported_with_real_methods():
+    from lark_bot.modules.agent import AgentStoreContract
+    assert hasattr(AgentStoreContract, "create_session")
+    assert inspect.isfunction(SQLiteAgentStore.create_session)
+    assert inspect.signature(SQLiteAgentStore.update_session).parameters["session_id"]
+
+
+def test_update_session_if_status_explicit_none_clears_summary():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="s", agent=AgentKind.CODEX, name="n", status=SessionStatus.RUNNING, summary="present", created_at=now, updated_at=now))
+        assert store.update_session_if_status("s", (SessionStatus.RUNNING,), status=SessionStatus.SUCCEEDED, summary=None, agent=AgentKind.CODEX)
+        assert store.get_session("s").summary == ""
+
 
 
 def test_agent_scope_does_not_expose_other_provider_rows():
@@ -166,6 +227,22 @@ def test_partial_v1_migration_adds_missing_tables_and_quotes_request_id():
     assert connection.execute("SELECT request_id FROM agent_interactions").fetchone()[0] == '"legacy"'
     assert connection.execute("SELECT COUNT(*) FROM agent_event_dedupe").fetchone()[0] == 0
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_v1_migration_quotes_legacy_request_id_once_in_physical_and_canonical_tables():
+    connection = sqlite3.connect(":memory:")
+    connection.executescript("""
+    PRAGMA user_version=1;
+    CREATE TABLE codex_sessions(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,name TEXT,cwd TEXT,model TEXT,sandbox TEXT,status TEXT,summary TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE codex_interactions(id TEXT PRIMARY KEY,session_id TEXT,request_id TEXT UNIQUE,kind TEXT,status TEXT,lark_message_id TEXT,payload_summary TEXT,requested_at TEXT,resolved_at TEXT,expires_at TEXT,actor_id TEXT,decision TEXT);
+    INSERT INTO codex_sessions VALUES('s',NULL,NULL,'n','/tmp',NULL,'workspace-write','running','','2020','2020');
+    INSERT INTO codex_interactions VALUES('i','s','legacy-id','exec_approval','resolved',NULL,'safe','2020',NULL,'2021',NULL,NULL);
+    """)
+    agent_schema.initialize_schema(connection)
+    physical = connection.execute("SELECT request_id FROM codex_interactions WHERE id='i'").fetchone()[0]
+    canonical = connection.execute("SELECT request_id FROM agent_interactions WHERE id='i'").fetchone()[0]
+    assert physical == canonical == '"legacy-id"'
+    connection.close()
 
 
 def test_concurrent_refresh_resolution_has_exactly_one_winner():

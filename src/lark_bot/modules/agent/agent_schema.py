@@ -12,7 +12,7 @@ LEGACY_TABLE_STATEMENTS: tuple[str, ...] = (
     );""",
     """CREATE TABLE IF NOT EXISTS codex_interactions (
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES codex_sessions(id),
-        request_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, status TEXT NOT NULL,
+        request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
         lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '',
         requested_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT NOT NULL,
         actor_id TEXT, decision TEXT
@@ -41,11 +41,8 @@ LEGACY_INDEX_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_codex_interactions_pending_request ON codex_interactions(request_id) WHERE status='pending';",
 )
 
-# These statements mark migrations whose actual execution depends on a
-# partially-created legacy database and is therefore coordinated by helpers below.
-LEGACY_REQUEST_ID_MIGRATION: tuple[str, ...] = (
-    "SELECT json_quote(request_id) AS canonical_request_id FROM codex_interactions;",
-)
+# Legacy outbox columns are added conditionally because v1/v2 databases may be
+# only partially initialized.
 LEGACY_OUTBOX_MIGRATION: tuple[str, ...] = (
     "ALTER TABLE notification_outbox ADD COLUMN agent TEXT;",
     "ALTER TABLE notification_outbox ADD COLUMN session_name TEXT;",
@@ -55,14 +52,14 @@ CANONICAL_TABLE_STATEMENTS: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS agent_sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, name TEXT NOT NULL,
         conversation_id TEXT, turn_id TEXT, cwd TEXT NOT NULL DEFAULT '', model TEXT,
-        sandbox TEXT NOT NULL DEFAULT '', permission_mode TEXT, status TEXT NOT NULL,
+        sandbox TEXT NOT NULL DEFAULT 'workspace-write', permission_mode TEXT, status TEXT NOT NULL,
         summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );""",
     """CREATE TABLE IF NOT EXISTS agent_interactions (
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id),
         request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
         lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
-        resolved_at TEXT, expires_at TEXT, actor_id TEXT, decision TEXT
+        resolved_at TEXT, expires_at TEXT NOT NULL, actor_id TEXT, decision TEXT
     );""",
     """CREATE TABLE IF NOT EXISTS agent_event_dedupe (
         agent TEXT NOT NULL, event_id TEXT NOT NULL, received_at TEXT NOT NULL,
@@ -70,7 +67,7 @@ CANONICAL_TABLE_STATEMENTS: tuple[str, ...] = (
     );""",
     """CREATE TABLE IF NOT EXISTS agent_notification_outbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
-        agent TEXT, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(id),
+        agent TEXT NOT NULL, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(id),
         notification_type TEXT NOT NULL, payload_summary TEXT NOT NULL,
         attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
         sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL
@@ -168,7 +165,26 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: LEGACY_TABLE_STATEMENTS + LEGACY_INDEX_STATEMENTS,
-    2: LEGACY_REQUEST_ID_MIGRATION,
+    2: (
+        """CREATE TABLE codex_interactions_v2 (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES codex_sessions(id),
+            request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+            lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT NOT NULL,
+            actor_id TEXT, decision TEXT
+        );""",
+        """INSERT INTO codex_interactions_v2
+            (id,session_id,request_id,kind,status,lark_message_id,payload_summary,
+             requested_at,resolved_at,expires_at,actor_id,decision)
+            SELECT id,session_id,json_quote(request_id),kind,status,lark_message_id,
+                   payload_summary,requested_at,resolved_at,expires_at,actor_id,decision
+            FROM codex_interactions;""",
+        "DROP INDEX IF EXISTS idx_codex_interactions_pending_request;",
+        "DROP TABLE codex_interactions;",
+        "ALTER TABLE codex_interactions_v2 RENAME TO codex_interactions;",
+        "CREATE INDEX IF NOT EXISTS idx_codex_interactions_status ON codex_interactions(status);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_interactions_pending_request ON codex_interactions(request_id) WHERE status='pending';",
+    ),
     3: LEGACY_OUTBOX_MIGRATION,
     4: CANONICAL_TABLE_STATEMENTS + CANONICAL_INDEX_STATEMENTS + MIRROR_TRIGGER_STATEMENTS,
 }
@@ -222,11 +238,11 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     try:
         connection.execute("BEGIN IMMEDIATE")
         _legacy_schema(connection)
-        _canonical_schema(connection)
         if version == 1:
             _execute_statements(connection, MIGRATIONS[2])
+        _canonical_schema(connection)
         if version < SCHEMA_VERSION:
-            request_expr = "json_quote(request_id)" if version == 1 else "request_id"
+            request_expr = "request_id"
             connection.execute(
                 """INSERT OR IGNORE INTO agent_sessions
                 (id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)

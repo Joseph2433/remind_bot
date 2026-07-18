@@ -11,6 +11,7 @@ from lark_bot.modules.agent.agent_model import (
     AgentKind,
     AgentSession,
     AgentNotification,
+    InteractionDecision,
     InteractionKind,
     InteractionStatus,
     SessionDisplay,
@@ -18,7 +19,7 @@ from lark_bot.modules.agent.agent_model import (
     SessionStatus,
     StartupReconciliationResult,
 )
-from lark_bot.modules.agent.agent_store import SQLiteAgentStore
+from lark_bot.modules.agent.agent_store import AgentStoreContract, SQLiteAgentStore
 from lark_bot.modules.agent.agent_protocol import AgentAdapter
 from lark_bot.modules.agent.agent_service import AgentRegistry, AgentSessionService
 
@@ -32,8 +33,10 @@ __all__ = [
     "AgentSession",
     "AgentSessionService",
     "AgentNotification",
+    "AgentStoreContract",
     "SQLiteAgentStore",
     "InteractionKind",
+    "InteractionDecision",
     "InteractionStatus",
     "MAX_HOOK_BYTES",
     "SessionDisplay",
