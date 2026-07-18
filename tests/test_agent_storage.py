@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from lark_bot.modules.agent.agent_model import AgentKind, AgentInteraction, AgentSession, InteractionKind, SessionStatus
 from lark_bot.modules.agent.agent_store import SQLiteAgentStore
+from lark_bot.modules.agent import agent_schema
 
 
 def test_shared_schema_and_session_round_trip():
@@ -79,3 +80,20 @@ def test_event_dedupe_is_provider_scoped():
     with SQLiteAgentStore(":memory:") as store:
         assert store.record_event_once("same", agent=AgentKind.CODEX)
         assert store.record_event_once("same", agent=AgentKind.CLAUDE)
+
+
+def test_schema_failure_rolls_back_and_restores_foreign_keys(monkeypatch):
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("PRAGMA user_version = 3")
+    monkeypatch.setattr(agent_schema, "_codex_mirror_triggers", lambda _: (_ for _ in ()).throw(RuntimeError("injected")))
+    try:
+        agent_schema.initialize_schema(connection)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("injected migration failure was not raised")
+    assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("SELECT name FROM sqlite_master WHERE name='agent_sessions'").fetchone() is None
