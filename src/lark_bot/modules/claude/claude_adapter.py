@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from uuid import uuid4
 
 from lark_bot.core.redaction import redact_text
 from lark_bot.modules.agent.agent_model import AgentKind
@@ -39,7 +38,7 @@ def claude_event_to_notification(event: ClaudeEvent) -> NotificationRequest:
 
     status, semantic_tag, extra_tags = _event_semantics(event, event_name)
     safe_summary = _safe_summary(event)
-    event_id = _event_id(event, event_name, status)
+    event_id = _event_id(event, event_name)
     return build_agent_notification(
         AgentNotificationInput(
             agent=AgentKind.CLAUDE,
@@ -87,11 +86,9 @@ def _event_semantics(event: ClaudeEvent, event_name: str) -> tuple[TaskStatus, s
     raise ValueError(f"Unsupported Claude notification type: {event.notification_type!r}")
 
 
-def _event_id(event: ClaudeEvent, event_name: str, status: TaskStatus) -> str:
+def _event_id(event: ClaudeEvent, event_name: str) -> str:
     if event.event_id:
         return event.event_id
-    if status is TaskStatus.WAITING_FOR_INPUT:
-        return uuid4().hex
 
     discriminator = _normalized_identity_value(
         event.notification_type or event.source or event.reason or event.error or "-"

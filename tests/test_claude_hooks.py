@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from lark_bot.modules.claude.claude_adapter import ClaudeEvent, claude_event_to_notification
 from lark_bot.modules.task.task_model import TaskStatus
@@ -96,7 +97,7 @@ def test_sensitive_hook_extras_are_not_stored_in_notification() -> None:
         assert secret not in serialized
 
 
-def test_repeated_raw_permission_requests_get_distinct_event_ids() -> None:
+def test_repeated_raw_permission_request_replay_is_idempotent() -> None:
     first = claude_event_to_notification(
         ClaudeEvent(
             session_id="session",
@@ -116,14 +117,14 @@ def test_repeated_raw_permission_requests_get_distinct_event_ids() -> None:
         )
     )
 
-    assert first.event_id != second.event_id
-    assert first.dedupe_key != second.dedupe_key
+    assert first.event_id == second.event_id
+    assert first.dedupe_key == second.dedupe_key
     serialized = first.model_dump_json()
     assert "bash" not in serialized
     assert "echo one" not in serialized
 
 
-def test_repeated_raw_waiting_notifications_get_distinct_event_ids() -> None:
+def test_repeated_raw_waiting_notification_replay_is_idempotent() -> None:
     event = ClaudeEvent(
         session_id="session",
         hook_event_name="Notification",
@@ -134,7 +135,7 @@ def test_repeated_raw_waiting_notifications_get_distinct_event_ids() -> None:
     first = claude_event_to_notification(event)
     second = claude_event_to_notification(event)
 
-    assert first.event_id != second.event_id
+    assert first.event_id == second.event_id
 
 
 def test_explicit_safe_event_id_keeps_action_request_idempotent() -> None:
@@ -160,6 +161,64 @@ def test_explicit_safe_event_id_keeps_action_request_idempotent() -> None:
     assert first.event_id == "safe-event-1"
     assert second.event_id == first.event_id
     assert second.dedupe_key == first.dedupe_key
+
+
+def test_distinct_explicit_safe_event_ids_distinguish_action_requests() -> None:
+    first = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="PermissionRequest",
+            prompt_id="prompt-1",
+            event_id="safe-event-1",
+        )
+    )
+    second = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="PermissionRequest",
+            prompt_id="prompt-1",
+            event_id="safe-event-2",
+        )
+    )
+
+    assert first.event_id != second.event_id
+    assert first.dedupe_key != second.dedupe_key
+
+
+def test_claude_event_strips_whitespace_before_validation() -> None:
+    event = ClaudeEvent(
+        session_id=" session ",
+        hook_event_name=" Stop ",
+        event_id=" safe-event ",
+    )
+
+    assert event.session_id == "session"
+    assert event.hook_event_name == "Stop"
+    assert event.event_id == "safe-event"
+
+
+@pytest.mark.parametrize("field_name", ["session_id", "hook_event_name", "event_id"])
+def test_claude_event_rejects_whitespace_only_identifiers(field_name: str) -> None:
+    values = {"session_id": "session", "hook_event_name": "Stop", field_name: "   "}
+
+    with pytest.raises(ValidationError):
+        ClaudeEvent(**values)
+
+
+def test_claude_event_id_accepts_200_characters_and_rejects_201() -> None:
+    accepted = ClaudeEvent(
+        session_id="session",
+        hook_event_name="Stop",
+        event_id="x" * 200,
+    )
+    assert accepted.event_id == "x" * 200
+
+    with pytest.raises(ValidationError):
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="Stop",
+            event_id="x" * 201,
+        )
 
 
 def test_deterministic_event_identity_avoids_delimiter_collisions() -> None:

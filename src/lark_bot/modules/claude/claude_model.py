@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ClaudeEvent(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     session_id: str = Field(min_length=1, max_length=200)
     hook_event_name: str = Field(min_length=1, max_length=100)
