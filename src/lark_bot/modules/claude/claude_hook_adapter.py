@@ -106,6 +106,8 @@ def normalize_callback(
             return None
         safe["event_id"] = event_id
     else:
+        # Claude supplies no event ID. Deterministic hashing would collapse
+        # legitimate identical approvals; persisted UUIDs survive replay unchanged.
         safe["event_id"] = uuid.uuid4().hex
     return safe
 

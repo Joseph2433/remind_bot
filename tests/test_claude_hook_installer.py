@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import lark_bot.modules.claude.claude_hook_installer as installer
 
 from lark_bot.modules.claude.claude_hook_installer import (
     OWNED_HANDLER,
@@ -125,6 +130,48 @@ def test_malformed_json_is_unchanged_and_reported(workspace_tmp_path: Path) -> N
     assert check_hooks(tmp_path).status == "malformed"
 
 
+def test_invalid_utf8_is_malformed_with_safe_detail_and_unchanged(workspace_tmp_path: Path) -> None:
+    tmp_path = workspace_tmp_path
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"secret-path": "\xff"}'
+    settings.write_bytes(original)
+
+    for operation in (check_hooks, install_hooks, uninstall_hooks):
+        result = operation(tmp_path)
+        assert result.status == "malformed"
+        assert result.detail == "settings must be valid UTF-8"
+        assert settings.read_bytes() == original
+
+
+def test_read_error_detail_does_not_expose_path(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "C:/private/project/settings.json"
+
+    def unavailable(_path: Path, *args: object, **kwargs: object) -> str:
+        raise OSError(f"access denied: {secret}")
+
+    monkeypatch.setattr(Path, "read_text", unavailable)
+
+    result = check_hooks(workspace_tmp_path)
+
+    assert result.status == "malformed"
+    assert result.detail == "unable to read settings"
+    assert secret not in result.detail
+
+
+def test_malformed_json_detail_is_fixed_and_safe(workspace_tmp_path: Path) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"private":', encoding="utf-8")
+
+    result = check_hooks(workspace_tmp_path)
+
+    assert result.status == "malformed"
+    assert result.detail == "settings must be valid JSON"
+
+
 def test_non_object_json_is_malformed_and_unchanged(workspace_tmp_path: Path) -> None:
     tmp_path = workspace_tmp_path
     settings = tmp_path / ".claude" / "settings.json"
@@ -171,6 +218,81 @@ def test_symlinked_claude_directory_is_refused_even_without_os_symlink_privilege
         uninstall_hooks(tmp_path)
 
 
+def test_reparse_point_claude_directory_is_refused(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text("{}", encoding="utf-8")
+    real_lstat = os.lstat
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def fake_lstat(path: str | os.PathLike[str]) -> object:
+        result = real_lstat(path)
+        if Path(path) == settings.parent:
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_dev=result.st_dev,
+                st_ino=result.st_ino,
+                st_file_attributes=reparse_flag,
+            )
+        return result
+
+    monkeypatch.setattr(installer.os, "lstat", fake_lstat)
+
+    with pytest.raises(ValueError, match="reparse"):
+        install_hooks(workspace_tmp_path)
+    with pytest.raises(ValueError, match="reparse"):
+        uninstall_hooks(workspace_tmp_path)
+
+
+def test_atomic_write_aborts_if_parent_identity_changes(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b"{}"
+    settings.write_bytes(original)
+    real_identity = getattr(installer, "_parent_identity", lambda path: (0, 0, 0, 0))
+    stable = real_identity(settings.parent)
+    changed = (stable[0], stable[1] + 1, stable[2], stable[3])
+    identities = iter((stable, stable, changed))
+
+    def swapped_identity(path: Path) -> tuple[int, int, int, int]:
+        if path == settings.parent:
+            return next(identities)
+        return real_identity(path)
+
+    monkeypatch.setattr(installer, "_parent_identity", swapped_identity, raising=False)
+
+    with pytest.raises(ValueError, match="changed"):
+        install_hooks(workspace_tmp_path)
+
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
+def test_atomic_write_cleans_temp_if_parent_changes_after_creation(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b"{}"
+    settings.write_bytes(original)
+    real_identity = installer._parent_identity
+    stable = real_identity(settings.parent)
+    changed = (stable[0], stable[1] + 1, stable[2], stable[3])
+    identities = iter((stable, changed))
+
+    monkeypatch.setattr(installer, "_parent_identity", lambda _path: next(identities))
+
+    with pytest.raises(ValueError, match="changed"):
+        install_hooks(workspace_tmp_path)
+
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
 @pytest.mark.parametrize(
     "event_value",
     [
@@ -193,6 +315,54 @@ def test_invalid_managed_hook_structure_is_malformed_and_unchanged(
     assert settings.read_text(encoding="utf-8") == original
     assert uninstall_hooks(tmp_path).status == "malformed"
     assert settings.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "not-an-object",
+        {"type": "command", "command": ""},
+        {"type": "command", "command": 7},
+        {"type": "command", "command": "other", "args": "--bad"},
+        {"type": "command", "command": "other", "args": [""]},
+        {"type": "command", "command": "other", "args": [7]},
+        {"type": "command", "command": "other", "async": "yes"},
+        {"type": "command", "command": "other", "timeout": 0},
+        {"type": "command", "command": "other", "timeout": -1},
+        {"type": "command", "command": "other", "timeout": True},
+        {"type": "command", "command": "other", "timeout": "10"},
+        {"type": "command", "command": "other", "timeout": float("nan")},
+        {"type": "command", "command": "other", "timeout": float("inf")},
+    ],
+)
+def test_invalid_managed_handler_is_malformed_and_unchanged(
+    workspace_tmp_path: Path, handler: object
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = json.dumps({"hooks": {"Stop": [{"hooks": [handler]}]}})
+    settings.write_text(original, encoding="utf-8")
+
+    for operation in (check_hooks, install_hooks, uninstall_hooks):
+        result = operation(workspace_tmp_path)
+        assert result.status == "malformed"
+        assert settings.read_text(encoding="utf-8") == original
+
+
+def test_unrelated_dict_handler_type_is_not_overvalidated(workspace_tmp_path: Path) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    unrelated = {"type": "prompt", "prompt": {"provider": "other"}}
+    settings.write_text(
+        json.dumps({"hooks": {"Stop": [{"hooks": [unrelated]}]}}),
+        encoding="utf-8",
+    )
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "installed"
+    value = json.loads(settings.read_text(encoding="utf-8"))
+    assert value["hooks"]["Stop"][0]["hooks"] == [unrelated]
 
 
 def test_install_reports_modified_owned_variant_without_mutation(workspace_tmp_path: Path) -> None:

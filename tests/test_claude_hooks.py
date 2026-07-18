@@ -3,6 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
+import lark_bot.modules.claude.claude_hook_adapter as hook_adapter
 from lark_bot.modules.claude.claude_hook_adapter import handle_callback, normalize_callback
 
 from lark_bot.modules.claude.claude_adapter import ClaudeEvent, claude_event_to_notification
@@ -374,3 +375,38 @@ def test_handle_callback_spools_identical_safe_payload_on_failure(workspace_tmp_
     assert handle_callback(stdin=payload, sender=unavailable, spool_dir=tmp_path)
     persisted = json.loads(next(tmp_path.glob("hook-*.json")).read_text(encoding="utf-8"))
     assert persisted == received[0]
+
+
+def test_failed_callback_normalizes_once_and_replay_preserves_event_id(
+    workspace_tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = json.dumps({"session_id": "s1", "hook_event_name": "PermissionRequest"})
+    calls = 0
+    real_normalize = hook_adapter.normalize_callback
+    received: list[dict[str, str]] = []
+
+    def counted_normalize(*, argv=(), stdin="") -> dict[str, str] | None:
+        nonlocal calls
+        calls += 1
+        return real_normalize(argv=argv, stdin=stdin)
+
+    def unavailable(value: dict[str, str]) -> None:
+        received.append(value)
+        raise OSError("offline")
+
+    monkeypatch.setattr(hook_adapter, "normalize_callback", counted_normalize)
+
+    assert hook_adapter.handle_callback(
+        stdin=payload,
+        sender=unavailable,
+        spool_dir=workspace_tmp_path,
+    )
+    persisted = json.loads(
+        next(workspace_tmp_path.glob("hook-*.json")).read_text(encoding="utf-8")
+    )
+    replay = real_normalize(stdin=json.dumps(persisted))
+
+    assert calls == 1
+    assert persisted == received[0]
+    assert replay is not None
+    assert replay["event_id"] == persisted["event_id"]

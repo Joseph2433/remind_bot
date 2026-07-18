@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,9 +38,39 @@ def _settings_path(project: str | Path) -> Path:
     return Path(project).resolve() / ".claude" / "settings.json"
 
 
-def _refuse_symlinks(path: Path) -> None:
-    if path.is_symlink() or path.parent.is_symlink():
+def _path_identity(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        result = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError("unable to inspect Claude Hook settings") from error
+    return (
+        int(result.st_dev),
+        int(result.st_ino),
+        int(result.st_mode),
+        int(getattr(result, "st_file_attributes", 0)),
+    )
+
+
+def _parent_identity(path: Path) -> tuple[int, int, int, int]:
+    identity = _path_identity(path)
+    if identity is None:
+        raise ValueError("Claude Hook settings directory changed")
+    return identity
+
+
+def _refuse_reparse(path: Path, identity: tuple[int, int, int, int] | None) -> None:
+    if path.is_symlink() or (identity is not None and stat.S_ISLNK(identity[2])):
         raise ValueError("refusing to replace symlink Claude Hook settings")
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if identity is not None and identity[3] & reparse_flag:
+        raise ValueError("refusing to replace reparse point Claude Hook settings")
+
+
+def _refuse_symlinks(path: Path) -> None:
+    for candidate in (path.parent, path):
+        _refuse_reparse(candidate, _path_identity(candidate))
 
 
 def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
@@ -46,12 +78,14 @@ def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}, HookCheck("missing")
-    except OSError as error:
-        return None, HookCheck("malformed", str(error))
+    except UnicodeDecodeError:
+        return None, HookCheck("malformed", "settings must be valid UTF-8")
+    except OSError:
+        return None, HookCheck("malformed", "unable to read settings")
     try:
         value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        return None, HookCheck("malformed", str(error))
+    except json.JSONDecodeError:
+        return None, HookCheck("malformed", "settings must be valid JSON")
     if not isinstance(value, dict):
         return None, HookCheck("malformed", "settings JSON must be an object")
     return value, None
@@ -60,15 +94,21 @@ def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
 def _write_atomic(path: Path, value: dict[str, object]) -> None:
     _refuse_symlinks(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlinks(path)
+    parent_identity = _parent_identity(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            if _parent_identity(path.parent) != parent_identity:
+                raise ValueError("Claude Hook settings directory changed")
             json.dump(value, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         _refuse_symlinks(path)
+        if _parent_identity(path.parent) != parent_identity:
+            raise ValueError("Claude Hook settings directory changed")
         temp_path.replace(path)
     finally:
         try:
@@ -126,8 +166,33 @@ def _validate_managed_hooks(value: dict[str, object]) -> HookCheck | None:
         for group in groups:
             if not isinstance(group, dict):
                 return HookCheck("malformed", f"hooks.{event} matcher groups must be objects")
-            if not isinstance(group.get("hooks"), list):
+            handlers = group.get("hooks")
+            if not isinstance(handlers, list):
                 return HookCheck("malformed", f"hooks.{event} matcher group hooks must be an array")
+            for handler in handlers:
+                if not isinstance(handler, dict):
+                    return HookCheck("malformed", f"hooks.{event} handlers must be objects")
+                if handler.get("type") != "command":
+                    continue
+                command = handler.get("command")
+                if not isinstance(command, str) or not command.strip():
+                    return HookCheck("malformed", f"hooks.{event} command must be a nonempty string")
+                args = handler.get("args")
+                if "args" in handler and (
+                    not isinstance(args, list)
+                    or any(not isinstance(arg, str) or not arg.strip() for arg in args)
+                ):
+                    return HookCheck("malformed", f"hooks.{event} args must be nonempty strings")
+                if "async" in handler and not isinstance(handler.get("async"), bool):
+                    return HookCheck("malformed", f"hooks.{event} async must be boolean")
+                timeout = handler.get("timeout")
+                if "timeout" in handler and (
+                    isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout)
+                    or timeout <= 0
+                ):
+                    return HookCheck("malformed", f"hooks.{event} timeout must be positive")
     return None
 
 
