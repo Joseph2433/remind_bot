@@ -1,5 +1,8 @@
 # Lark Interactive Card Render Design
 
+> **Status: Done** (2026-07-18)  
+> Merged: PR #8 → `dev` (`feat/20260717-lark-card-render`, merge `906cbb4`)
+
 ## Goal
 
 Replace plain `msg_type: text` outbound notifications with Feishu/Lark **interactive cards (schema 2.0)** so mobile clients render markdown and colored status headers. Keep `text` as a config fallback. Do not change HITL correlation.
@@ -83,9 +86,20 @@ Unchanged: reactions and reply-to key off `lark_message_id`. Card buttons are de
 
 ## Acceptance
 
-1. CLI `run` / `codex-event` / `send-test` send interactive by default.
-2. Daemon outbox interaction/terminal notifications send interactive by default.
-3. `LARK_BOT_MESSAGE_FORMAT=text` restores previous plain-text payloads.
-4. Secrets in tails/summaries still become `[REDACTED]`.
-5. Outbox still attaches `message_id` for pending interactions.
-6. Unit tests pass without network.
+1. CLI `run` / `codex-event` / `send-test` send interactive by default. — **met**
+2. Daemon outbox interaction/terminal notifications send interactive by default. — **met**
+3. `LARK_BOT_MESSAGE_FORMAT=text` restores previous plain-text payloads. — **met**
+4. Secrets in tails/summaries still become `[REDACTED]`. — **met**
+5. Outbox still attaches `message_id` for pending interactions. — **met**
+6. Unit tests pass without network. — **met**
+
+## Landed modules
+
+| Path | Role |
+|------|------|
+| `src/lark_bot/lark/messages.py` | `RenderedMessage`, `build_text_message`, `build_interactive_message` |
+| `src/lark_bot/lark/render.py` | `render_task_notification` / `render_outbox_notification` |
+| `src/lark_bot/lark/client.py` | `send_rendered` |
+| `src/lark_bot/config.py` | `message_format: card \| text` (`LARK_BOT_MESSAGE_FORMAT`) |
+| `src/lark_bot/server/daemon/app.py` | Outbox uses `send_rendered` |
+| `tests/test_lark_render.py` and related | Render / payload / config / daemon coverage |

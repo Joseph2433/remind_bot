@@ -2,10 +2,19 @@
 
 Record and evaluate four product directions for the version after the global-daemon-home work. This is a planning note, not an implementation plan.
 
+## Progress (2026-07-18)
+
+| Priority | Direction | Status |
+|----------|-----------|--------|
+| **P0** | 4. MD / card render | **Done** — merged to `dev` via PR #8 (`feat/20260717-lark-card-render`, `906cbb4`). Design: `2026-07-17-lark-card-render-design.md` |
+| P1 | 1. Claude notify adapter | Not started (next up) |
+| P2 | 2. Session concurrency + metadata | Not started |
+| P3 | 3. Optional multi-bot | Not started |
+
 ## Current baseline (relevant constraints)
 
 - One Lark app / one receive target: `LARK_BOT_LARK_APP_ID` + single `LARK_BOT_LARK_RECEIVE_ID`.
-- Outbound notifications are plain `msg_type: text` (`src/lark_bot/lark/client.py` → `build_text_message`).
+- Outbound notifications default to **interactive cards (schema 2.0)** (`lark/render.py` + `build_interactive_message`); `LARK_BOT_MESSAGE_FORMAT=text` forces plain text.
 - Codex has a deep path: hooks notify fragment, event adapter, app-server orchestrator, approval/input loop, SQLite session store under machine-global `LARK_BOT_HOME`.
 - Generic agent ingress already exists (`POST /agent/events` + `AgentEvent`), while Codex has a dedicated adapter (`notifications/adapters/codex.py`) and a full managed control plane under `codex/`.
 - The product identity is still a **companion**: watch, summarize, redact, notify, and for managed Codex, mediate human-in-the-loop — not an independent coding agent.
@@ -141,12 +150,12 @@ Notifications are authored as Markdown-ish plain text but sent as unrendered `te
 
 ## Suggested priority order
 
-| Priority | Direction | Rationale |
-|----------|-----------|-----------|
-| P0 | **4. MD / card render** | Small surface, immediate readability, foundation for multi-session headers |
-| P1 | **1. Claude notify adapter** | Expands agent coverage with Codex-proven shape; avoid full orchestrator initially |
-| P2 | **2. Session concurrency + metadata** | Daemon-side caps and stamped headers; message_id routing already multi-session ready |
-| P3 | **3. Optional multi-bot by agent or slot** | Only after transport abstraction; logical source split already done in P1 |
+| Priority | Direction | Rationale | Status |
+|----------|-----------|-----------|--------|
+| P0 | **4. MD / card render** | Small surface, immediate readability, foundation for multi-session headers | **Done** (2026-07-18, PR #8) |
+| P1 | **1. Claude notify adapter** | Expands agent coverage with Codex-proven shape; avoid full orchestrator initially | Next up |
+| P2 | **2. Session concurrency + metadata** | Daemon-side caps and stamped headers; message_id routing already multi-session ready | Not started |
+| P3 | **3. Optional multi-bot by agent or slot** | Only after transport abstraction; logical source split already done in P1 | Not started |
 
 ## Cross-cutting design principles
 
