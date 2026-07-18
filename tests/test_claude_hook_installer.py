@@ -413,10 +413,52 @@ def test_publish_exception_restores_staged_existing_target(
 
     monkeypatch.setattr(installer.os, "link", fail_publish_once)
 
-    with pytest.raises(OSError, match="publish unavailable"):
-        install_hooks(workspace_tmp_path)
+    result = install_hooks(workspace_tmp_path)
 
+    assert result.status == "modified"
+    assert result.detail == "unable to publish settings"
     assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_persistent_link_failure_restores_existing_target_without_artifacts(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b'{"permissions":{"allow":["Read"]}}'
+    settings.write_bytes(original)
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError("hard links unsupported at C:/private/settings.json")
+
+    monkeypatch.setattr(installer.os, "link", unsupported_link)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "unable to publish settings"
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_persistent_link_failure_for_missing_target_is_safe_and_clean(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError("hard links unsupported at C:/private/settings.json")
+
+    monkeypatch.setattr(installer.os, "link", unsupported_link)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "unable to publish settings"
+    assert not settings.exists()
     assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
     assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
 

@@ -31,6 +31,7 @@ HOOK_EVENTS = (
 HookStatus = Literal["installed", "missing", "modified", "malformed"]
 _CONCURRENT_CHANGE_DETAIL = "settings changed during update"
 _LOCK_FAILURE_DETAIL = "unable to lock settings"
+_PUBLISH_FAILURE_DETAIL = "unable to publish settings"
 
 
 @dataclass(frozen=True)
@@ -311,14 +312,17 @@ def _unlink_known(path: Path, parent_fd: int | None) -> None:
 
 
 def _restore_backup(backup: Path, destination: Path, parent_fd: int | None) -> bool:
-    try:
-        restored = _link_no_overwrite(backup, destination, parent_fd)
-    except OSError:
-        return False
-    if restored or _target_matches(destination, _missing_snapshot(), parent_fd) is False:
+    if not _target_matches(destination, _missing_snapshot(), parent_fd):
         _unlink_known(backup, parent_fd)
         return True
-    return False
+    try:
+        _replace_in_parent(backup, destination, parent_fd)
+    except OSError:
+        if not _target_matches(destination, _missing_snapshot(), parent_fd):
+            _unlink_known(backup, parent_fd)
+            return True
+        return False
+    return True
 
 
 def _write_atomic(
@@ -393,7 +397,14 @@ def _write_atomic(
 
         if _parent_identity(path.parent) != parent_identity:
             raise ValueError("Claude Hook settings directory changed")
-        if not _link_no_overwrite(temp_path, path, parent_fd):
+        try:
+            published = _link_no_overwrite(temp_path, path, parent_fd)
+        except OSError:
+            if backup_staged and backup_path is not None:
+                if _restore_backup(backup_path, path, parent_fd):
+                    backup_staged = False
+            return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
+        if not published:
             if backup_path is not None:
                 _unlink_known(backup_path, parent_fd)
                 backup_staged = False
