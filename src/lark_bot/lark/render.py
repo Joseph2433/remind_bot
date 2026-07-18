@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from lark_bot.codex.models import InteractionKind
@@ -13,8 +14,11 @@ from lark_bot.lark.messages import (
 from lark_bot.models import NotificationRequest, TaskStatus
 from lark_bot.redaction import redact_text
 
-OUTBOX_SUMMARY_LIMIT = 500
 MARKDOWN_BODY_LIMIT = 4000
+
+_FENCE_LINE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_INLINE_BACKTICK_RE = re.compile(r"`+")
+_LARK_AT_TAG_RE = re.compile(r"</?at(?:\s+[^<>]*?)?\s*>", re.IGNORECASE)
 
 _OUTBOX_HEADINGS = {
     "orchestrator:session_completed": "Codex 会话已完成",
@@ -33,11 +37,13 @@ def render_task_notification(
     title = f"Lark Bot: {request.detection.status.value}"
     body_text = _task_body_text(request, tail_lines=tail_lines)
     body_text = redact_text(body_text)
+    body_text = _escape_lark_at_tags(body_text)
     if message_format == "text":
         return text_message(body_text)
     markdown = _task_markdown(request, tail_lines=tail_lines)
     markdown = redact_text(markdown)
-    markdown = _truncate(markdown, MARKDOWN_BODY_LIMIT)
+    markdown = _neutralize_lark_mentions(markdown)
+    markdown = _truncate_markdown(markdown, MARKDOWN_BODY_LIMIT)
     return interactive_card(
         title=title,
         markdown=markdown,
@@ -52,12 +58,14 @@ def render_outbox_notification(
     interaction: Any | None = None,
 ) -> RenderedMessage:
     heading, instruction = _outbox_heading_and_instruction(item, interaction)
-    summary = redact_text(str(item.payload_summary))[:OUTBOX_SUMMARY_LIMIT]
+    summary = redact_text(str(item.payload_summary))
     plain = _outbox_plain_text(heading, summary, instruction)
+    plain = _escape_lark_at_tags(plain)
     if message_format == "text":
         return text_message(plain)
-    markdown = _outbox_markdown(heading, summary, instruction)
-    markdown = _truncate(markdown, MARKDOWN_BODY_LIMIT)
+    markdown = _outbox_markdown(summary, instruction)
+    markdown = _neutralize_lark_mentions(markdown)
+    markdown = _truncate_markdown(markdown, MARKDOWN_BODY_LIMIT)
     return interactive_card(
         title=heading,
         markdown=markdown,
@@ -102,8 +110,7 @@ def _task_markdown(request: NotificationRequest, *, tail_lines: int) -> str:
     ]
     tail = task.combined_tail_text.splitlines()[-tail_lines:]
     if tail:
-        fenced = "\n".join(tail)
-        parts.extend(["", "### Output", "```", fenced, "```"])
+        parts.extend(["", "### Output", "", "\n".join(tail)])
     return "\n".join(parts)
 
 
@@ -135,11 +142,102 @@ def _outbox_plain_text(heading: str, summary: str, instruction: str | None) -> s
     return f"{heading}\n{summary}"
 
 
-def _outbox_markdown(heading: str, summary: str, instruction: str | None) -> str:
-    parts = [f"**{heading}**", "", "```", summary, "```"]
+def _outbox_markdown(summary: str, instruction: str | None) -> str:
+    parts: list[str] = []
+    if summary:
+        parts.append(summary)
     if instruction:
-        parts.extend(["", instruction])
+        if parts:
+            parts.extend(["", "---", ""])
+        parts.append(instruction)
     return "\n".join(parts)
+
+
+def _neutralize_lark_mentions(markdown: str) -> str:
+    parts: list[str] = []
+    open_fence: tuple[str, int] | None = None
+    for line in markdown.splitlines(keepends=True):
+        fence = _fence_marker(line)
+        if open_fence is not None:
+            parts.append(line)
+            if fence is not None and _closes_fence(line, fence, open_fence):
+                open_fence = None
+            continue
+        if fence is not None:
+            open_fence = fence
+            parts.append(line)
+            continue
+        parts.append(_neutralize_inline_mentions(line))
+    return "".join(parts)
+
+
+def _neutralize_inline_mentions(text: str) -> str:
+    matches = [
+        match
+        for match in _INLINE_BACKTICK_RE.finditer(text)
+        if not _is_escaped(text, match.start())
+    ]
+    parts: list[str] = []
+    cursor = 0
+    match_index = 0
+    while match_index < len(matches):
+        opening = matches[match_index]
+        closing_index = next(
+            (
+                index
+                for index in range(match_index + 1, len(matches))
+                if len(matches[index].group(0)) == len(opening.group(0))
+            ),
+            None,
+        )
+        if closing_index is None:
+            break
+        closing = matches[closing_index]
+        parts.append(_escape_lark_at_tags(text[cursor : opening.start()]))
+        parts.append(text[opening.start() : closing.end()])
+        cursor = closing.end()
+        match_index = closing_index + 1
+    parts.append(_escape_lark_at_tags(text[cursor:]))
+    return "".join(parts)
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    backslash_count = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslash_count += 1
+        cursor -= 1
+    return backslash_count % 2 == 1
+
+
+def _escape_lark_at_tags(text: str) -> str:
+    return _LARK_AT_TAG_RE.sub(
+        lambda match: match.group(0).replace("<", "&#60;").replace(">", "&#62;"),
+        text,
+    )
+
+
+def _fence_marker(line: str) -> tuple[str, int] | None:
+    match = _FENCE_LINE_RE.match(line.rstrip("\r\n"))
+    if match is None:
+        return None
+    marker = match.group(1)
+    return marker[0], len(marker)
+
+
+def _closes_fence(
+    line: str,
+    fence: tuple[str, int],
+    open_fence: tuple[str, int],
+) -> bool:
+    marker_match = _FENCE_LINE_RE.match(line.rstrip("\r\n"))
+    if marker_match is None:
+        return False
+    return (
+        fence[0] == open_fence[0]
+        and fence[1] >= open_fence[1]
+        and not marker_match.group(2).strip()
+    )
 
 
 def _status_template(status: TaskStatus) -> HeaderTemplate:
@@ -163,9 +261,36 @@ def _outbox_template(notification_type: str, interaction: Any | None) -> HeaderT
     return "blue"
 
 
-def _truncate(text: str, limit: int) -> str:
+def _truncate_markdown(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     if limit <= 3:
         return text[:limit]
-    return text[: limit - 3] + "..."
+    ellipsis = "..."
+    prefix = text[: limit - len(ellipsis)]
+    open_fence = _unclosed_fence(prefix)
+    if open_fence is None:
+        return prefix + ellipsis
+    closing_fence = "\n" + open_fence[0] * open_fence[1]
+    content_limit = limit - len(ellipsis) - len(closing_fence)
+    if content_limit <= 0:
+        return text[:limit]
+    prefix = text[:content_limit]
+    open_fence = _unclosed_fence(prefix)
+    if open_fence is None:
+        return prefix + ellipsis
+    closing_fence = "\n" + open_fence[0] * open_fence[1]
+    return prefix + ellipsis + closing_fence
+
+
+def _unclosed_fence(markdown: str) -> tuple[str, int] | None:
+    open_fence: tuple[str, int] | None = None
+    for line in markdown.splitlines(keepends=True):
+        fence = _fence_marker(line)
+        if open_fence is None:
+            if fence is not None:
+                open_fence = fence
+            continue
+        if fence is not None and _closes_fence(line, fence, open_fence):
+            open_fence = None
+    return open_fence
