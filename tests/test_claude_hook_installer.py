@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -300,13 +301,17 @@ def test_install_preserves_existing_target_changed_after_read(
     settings.parent.mkdir()
     settings.write_text("{}", encoding="utf-8")
     user_update = b'{"permissions":{"allow":["Bash"]}}'
-    real_write = installer._write_atomic
+    real_replace = installer.os.replace
+    injected = False
 
-    def raced_write(path: Path, value: dict[str, object], snapshot: object):
-        settings.write_bytes(user_update)
-        return real_write(path, value, snapshot)
+    def raced_replace(source, destination, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            settings.write_bytes(user_update)
+        return real_replace(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(installer, "_write_atomic", raced_write)
+    monkeypatch.setattr(installer.os, "replace", raced_replace)
 
     result = install_hooks(workspace_tmp_path)
 
@@ -321,14 +326,17 @@ def test_install_preserves_target_created_after_missing_read(
 ) -> None:
     settings = workspace_tmp_path / ".claude" / "settings.json"
     user_update = b'{"permissions":{"deny":["Write"]}}'
-    real_write = installer._write_atomic
+    real_link = installer.os.link
+    injected = False
 
-    def raced_write(path: Path, value: dict[str, object], snapshot: object):
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_bytes(user_update)
-        return real_write(path, value, snapshot)
+    def raced_link(source, destination, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            settings.write_bytes(user_update)
+        return real_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(installer, "_write_atomic", raced_write)
+    monkeypatch.setattr(installer.os, "link", raced_link)
 
     result = install_hooks(workspace_tmp_path)
 
@@ -336,6 +344,91 @@ def test_install_preserves_target_created_after_missing_read(
     assert result.detail == "settings changed during update"
     assert settings.read_bytes() == user_update
     assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+
+
+def test_lock_failure_returns_fixed_safe_detail(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "C:/private/.lark-bot-settings.lock"
+    real_open = installer.os.open
+
+    def unavailable(path, *args, **kwargs):
+        if Path(path).name == ".lark-bot-settings.lock":
+            raise OSError(f"cannot lock {secret}")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(installer.os, "open", unavailable)
+
+    result = install_hooks(workspace_tmp_path)
+
+    assert result.status == "modified"
+    assert result.detail == "unable to lock settings"
+    assert secret not in result.detail
+
+
+def test_settings_lock_handle_is_closed_after_install(workspace_tmp_path: Path) -> None:
+    result = install_hooks(workspace_tmp_path)
+    lock_path = workspace_tmp_path / ".claude" / ".lark-bot-settings.lock"
+    moved = lock_path.with_suffix(".moved")
+
+    assert result.status == "installed"
+    lock_path.replace(moved)
+    moved.replace(lock_path)
+
+
+def test_concurrent_installers_produce_valid_nonduplicated_settings(workspace_tmp_path: Path) -> None:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: install_hooks(workspace_tmp_path), range(2)))
+
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    value = json.loads(settings.read_text(encoding="utf-8"))
+
+    assert all(result.status == "installed" for result in results)
+    for event in installer.HOOK_EVENTS:
+        owned = [
+            handler
+            for group in value["hooks"][event]
+            for handler in group["hooks"]
+            if handler == OWNED_HANDLER
+        ]
+        assert owned == [OWNED_HANDLER]
+
+
+def test_publish_exception_restores_staged_existing_target(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    original = b"{}"
+    settings.write_bytes(original)
+    real_link = installer.os.link
+    failed = False
+
+    def fail_publish_once(source, destination, *args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("publish unavailable")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(installer.os, "link", fail_publish_once)
+
+    with pytest.raises(OSError, match="publish unavailable"):
+        install_hooks(workspace_tmp_path)
+
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob(f".{settings.name}.*.tmp")) == []
+    assert list(settings.parent.glob(f".{settings.name}.backup.*.bak")) == []
+
+
+def test_install_does_not_remove_unknown_backup_file(workspace_tmp_path: Path) -> None:
+    settings_dir = workspace_tmp_path / ".claude"
+    settings_dir.mkdir()
+    unknown = settings_dir / ".settings.json.backup.unknown.bak"
+    unknown.write_bytes(b"user-owned")
+
+    assert install_hooks(workspace_tmp_path).status == "installed"
+    assert unknown.read_bytes() == b"user-owned"
 
 
 @pytest.mark.parametrize(
