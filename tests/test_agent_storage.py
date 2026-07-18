@@ -123,3 +123,20 @@ def test_version3_legacy_rows_migrate_to_all_canonical_tables():
     assert connection.execute("SELECT session_name FROM agent_notification_outbox").fetchone()[0] == "n"
     assert connection.execute("SELECT id FROM agent_audit").fetchone()[0] == 1
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_partial_v1_migration_adds_missing_tables_and_quotes_request_id():
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.executescript("""
+    PRAGMA user_version=1;
+    CREATE TABLE codex_sessions(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,name TEXT,cwd TEXT,model TEXT,sandbox TEXT,status TEXT,summary TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE codex_interactions(id TEXT PRIMARY KEY,session_id TEXT,request_id TEXT,kind TEXT,status TEXT,lark_message_id TEXT,payload_summary TEXT,requested_at TEXT,resolved_at TEXT,expires_at TEXT,actor_id TEXT,decision TEXT);
+    INSERT INTO codex_sessions VALUES('s',NULL,NULL,'n','/tmp',NULL,'workspace-write','running','','2020','2020');
+    INSERT INTO codex_interactions VALUES('i','s','legacy','exec_approval','resolved',NULL,'safe','2020',NULL,'2021',NULL,NULL);
+    """)
+    agent_schema.initialize_schema(connection)
+    assert connection.execute("SELECT request_id FROM agent_interactions").fetchone()[0] == '"legacy"'
+    assert connection.execute("SELECT COUNT(*) FROM agent_event_dedupe").fetchone()[0] == 0
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
