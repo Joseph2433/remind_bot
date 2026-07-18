@@ -1,5 +1,9 @@
+import json
+
 import pytest
 from pydantic import ValidationError
+
+from lark_bot.modules.claude.claude_hook_adapter import handle_callback, normalize_callback
 
 from lark_bot.modules.claude.claude_adapter import ClaudeEvent, claude_event_to_notification
 from lark_bot.modules.task.task_model import TaskStatus
@@ -291,3 +295,82 @@ def test_unknown_notification_type_fails_closed(notification_type: str) -> None:
                 notification_type=notification_type,
             )
         )
+
+
+def test_safe_hook_payload_drops_sensitive_fields() -> None:
+    safe = normalize_callback(
+        stdin=json.dumps(
+            {
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "hook_event_name": "PermissionRequest",
+                "transcript_path": "secret-path",
+                "cwd": "secret-cwd",
+                "tool_input": {"command": "secret-command"},
+                "permission_suggestions": [{"secret": "value"}],
+            }
+        )
+    )
+    assert safe is not None
+    assert safe["agent"] == "claude"
+    assert safe["session_id"] == "s1"
+    assert safe["prompt_id"] == "p1"
+    assert safe["hook_event_name"] == "PermissionRequest"
+    assert "secret" not in json.dumps(safe)
+
+
+def test_normalize_generates_unique_event_ids_and_preserves_explicit() -> None:
+    payload = json.dumps({"session_id": "s1", "hook_event_name": "Stop"})
+    first = normalize_callback(stdin=payload)
+    second = normalize_callback(stdin=payload)
+    explicit = normalize_callback(
+        stdin=json.dumps({"session_id": "s1", "hook_event_name": "Stop", "event_id": "safe-1"})
+    )
+
+    assert first is not None and second is not None and explicit is not None
+    assert first["event_id"] != second["event_id"]
+    assert explicit["event_id"] == "safe-1"
+
+
+def test_normalize_rejects_invalid_event_and_oversized_payload() -> None:
+    assert normalize_callback(stdin=json.dumps({"session_id": "s1", "hook_event_name": "Unknown"})) is None
+    assert normalize_callback(stdin="x" * (64 * 1024 + 1)) is None
+    assert normalize_callback(stdin="[]") is None
+
+
+def test_disabled_callback_returns_without_delivery_or_spool(workspace_tmp_path) -> None:
+    called: list[dict[str, str]] = []
+
+    assert not handle_callback(
+        stdin=json.dumps({"session_id": "s1", "hook_event_name": "Stop"}),
+        sender=called.append,
+        spool_dir=workspace_tmp_path,
+        environ={"LARK_BOT_CLAUDE_HOOK_DISABLED": "1"},
+    )
+    assert called == []
+    assert not list(workspace_tmp_path.glob("hook-*.json"))
+
+
+def test_successful_hook_delivery_does_not_spool(workspace_tmp_path) -> None:
+    received: list[dict[str, str]] = []
+    assert handle_callback(
+        stdin=json.dumps({"session_id": "s1", "hook_event_name": "Stop"}),
+        sender=received.append,
+        spool_dir=workspace_tmp_path,
+    )
+    assert received[0]["agent"] == "claude"
+    assert not list(workspace_tmp_path.glob("hook-*.json"))
+
+
+def test_handle_callback_spools_identical_safe_payload_on_failure(workspace_tmp_path) -> None:
+    tmp_path = workspace_tmp_path
+    payload = json.dumps({"session_id": "s1", "hook_event_name": "Stop"})
+    received: list[dict[str, str]] = []
+
+    def unavailable(value: dict[str, str]) -> None:
+        received.append(value)
+        raise OSError("offline")
+
+    assert handle_callback(stdin=payload, sender=unavailable, spool_dir=tmp_path)
+    persisted = json.loads(next(tmp_path.glob("hook-*.json")).read_text(encoding="utf-8"))
+    assert persisted == received[0]
