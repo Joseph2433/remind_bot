@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from lark_bot.config import Settings
-from lark_bot.codex.models import CodexSession, NotificationOutboxItem, SessionStatus
+from lark_bot.modules.codex.codex_model import CodexSession, NotificationOutboxItem, SessionStatus
 from lark_bot.modules.agent.agent_model import AgentKind
 from lark_bot.server.daemon import DaemonRuntime, build_runtime, create_daemon_app, ensure_daemon_token
 

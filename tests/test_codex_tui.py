@@ -5,14 +5,14 @@ import json
 
 import pytest
 
-from lark_bot.codex.tui import CodexTuiLauncher, CodexTuiOptions
+from lark_bot.modules.codex.codex_tui import CodexTuiLauncher, CodexTuiOptions
 
 
 def test_launcher_resolves_codex_and_inherits_console_streams(monkeypatch):
     calls: list[tuple[list[str], dict[str, object]]] = []
 
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: "C:/tools/codex.cmd")
-    monkeypatch.setattr("lark_bot.codex.tui._read_existing_notify", lambda value: None)
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: "C:/tools/codex.cmd")
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui._read_existing_notify", lambda value: None)
 
     class Result:
         returncode = 7
@@ -41,7 +41,7 @@ def test_launcher_resolves_codex_and_inherits_console_streams(monkeypatch):
 def test_launcher_chains_existing_global_notify_without_editing_config(monkeypatch, workspace_tmp_path):
     config = workspace_tmp_path / "config.toml"
     config.write_text('model = "keep"\nnotify = ["C:\\\\tools\\\\existing.exe", "turn-ended"]\n', encoding="utf-8")
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: "C:/tools/codex.cmd")
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: "C:/tools/codex.cmd")
     calls = []
 
     def run(args, **kwargs):
@@ -56,8 +56,8 @@ def test_launcher_chains_existing_global_notify_without_editing_config(monkeypat
 
 
 def test_launcher_forwards_prompt_model_and_sandbox_verbatim(monkeypatch):
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: "/usr/bin/codex")
-    monkeypatch.setattr("lark_bot.codex.tui._read_existing_notify", lambda value: None)
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: "/usr/bin/codex")
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui._read_existing_notify", lambda value: None)
     seen: list[list[str]] = []
 
     def run(args, **kwargs):
@@ -71,14 +71,14 @@ def test_launcher_forwards_prompt_model_and_sandbox_verbatim(monkeypatch):
 
 
 def test_launcher_reports_missing_codex(monkeypatch):
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: None)
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: None)
 
     with pytest.raises(FileNotFoundError, match="Codex executable"):
         CodexTuiLauncher().run(CodexTuiOptions())
 
 
 def test_remote_launcher_uses_gateway_token_env_and_skips_notify(monkeypatch):
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: "C:/tools/codex.exe")
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: "C:/tools/codex.exe")
     calls = []
 
     def run(args, **kwargs):
@@ -109,7 +109,7 @@ def test_remote_launcher_uses_gateway_token_env_and_skips_notify(monkeypatch):
 
 
 def test_remote_launcher_requires_endpoint_and_token_together(monkeypatch):
-    monkeypatch.setattr("lark_bot.codex.tui.shutil.which", lambda value: "codex")
+    monkeypatch.setattr("lark_bot.modules.codex.codex_tui.shutil.which", lambda value: "codex")
 
     with pytest.raises(ValueError, match="endpoint and token"):
         CodexTuiLauncher().run(CodexTuiOptions(remote_endpoint="ws://127.0.0.1:1"))

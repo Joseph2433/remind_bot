@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from lark_bot import __version__
-from lark_bot.codex.app_server import (
+from lark_bot.modules.codex.app_server import (
     CodexAppServerClient,
     ProcessExitedError,
     ProtocolError,
@@ -20,7 +20,7 @@ from lark_bot.codex.app_server import (
     permission_response,
     user_input_response,
 )
-from lark_bot.codex.app_server import client as app_server_client
+import lark_bot.modules.codex.app_server.app_server_client as app_server_client
 
 
 def test_default_process_factory_resolves_windows_command_shim(monkeypatch) -> None:

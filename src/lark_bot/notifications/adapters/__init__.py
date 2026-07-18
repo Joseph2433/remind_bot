@@ -1,1 +1,0 @@
-"""Notification provider adapters."""

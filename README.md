@@ -245,7 +245,7 @@ Implementation modules are grouped by functional ownership under `src/lark_bot/`
 - `server/daemon/`: authenticated daemon API, shared Bot runtime, provider registry composition, and workers.
 - `server/`: public FastAPI event callback endpoints.
 
-The daemon owns one Lark Bot client and can serve multiple independent Codex or Claude sessions. Each session has a stable `session_id`; interactive Lark replies resolve through `lark_message_id` to the corresponding interaction and session. Notifications display the agent, session name, and a short session ID. The old `lark_bot.codex.*`, `lark_bot.lark.*`, `lark_bot.tasks.*`, and `lark_bot.notifications.*` paths remain compatibility shims for existing integrations.
+The daemon owns one Lark Bot client and can serve multiple independent Codex or Claude sessions. Each session has a stable `session_id`; interactive Lark replies resolve through `lark_message_id` to the corresponding interaction and session. Notifications display the agent, session name, and a short session ID. Provider and capability imports use the canonical `lark_bot.modules.*` namespace. The former `lark_bot.codex.*`, `lark_bot.lark.*`, `lark_bot.tasks.*`, `lark_bot.notifications.*`, and `lark_bot.storage.codex.*` namespaces were intentionally removed in this breaking import-path change.
 
 ## Security Notes
 

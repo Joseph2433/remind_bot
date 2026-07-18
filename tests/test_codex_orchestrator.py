@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lark_bot.codex.app_server import ServerNotification, ServerRequest
-from lark_bot.codex.models import InteractionKind, InteractionStatus, SessionStatus
-from lark_bot.codex.orchestration import (
+from lark_bot.modules.codex.app_server import ServerNotification, ServerRequest
+from lark_bot.modules.codex.codex_model import InteractionKind, InteractionStatus, SessionStatus
+from lark_bot.modules.codex.orchestration import (
     CodexOrchestrator,
     OrchestratorEventType,
 )
-from lark_bot.storage.codex import SQLiteCodexStore
+from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc)
@@ -929,7 +929,7 @@ def test_expired_user_input_is_marked_interrupted_even_if_interrupt_rpc_fails():
 def test_start_reconciles_before_consumers_and_is_idempotent():
     async def scenario():
         orchestrator, store, app, _ = make_orchestrator()
-        from lark_bot.codex.models import CodexSession
+        from lark_bot.modules.codex.codex_model import CodexSession
         store.create_session(CodexSession(
             id="old", name="old", cwd="C:/old", sandbox="workspace-write",
             status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW,
@@ -951,7 +951,7 @@ def test_startup_reconciliation_never_blocks_when_hint_queue_is_full():
     async def scenario():
         store = SQLiteCodexStore(":memory:")
         app = FakeAppServer()
-        from lark_bot.codex.models import CodexSession
+        from lark_bot.modules.codex.codex_model import CodexSession
         for session_id in ("old-1", "old-2"):
             store.create_session(CodexSession(id=session_id, name="old", cwd="C:/old", sandbox="workspace-write", status=SessionStatus.RUNNING, created_at=NOW, updated_at=NOW))
         orchestrator = CodexOrchestrator(store, app, now=Clock(), id_factory=IdFactory(), event_queue_capacity=1)

@@ -1,1 +1,0 @@
-"""Notification interfaces and adapters."""

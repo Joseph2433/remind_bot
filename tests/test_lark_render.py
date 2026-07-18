@@ -1,8 +1,8 @@
 import json
 
-from lark_bot.codex.models import InteractionKind
-from lark_bot.lark.messages import build_api_payload, build_interactive_message, interactive_card
-from lark_bot.lark.render import render_outbox_notification, render_task_notification
+from lark_bot.modules.codex.codex_model import InteractionKind
+from lark_bot.modules.lark.lark_message import build_api_payload, build_interactive_message, interactive_card
+from lark_bot.modules.lark.lark_render import render_outbox_notification, render_task_notification
 from lark_bot.models import DetectionResult, NotificationContext, NotificationRequest, TaskResult, TaskStatus
 from lark_bot.modules.agent.agent_model import AgentKind, SessionDisplay
 
