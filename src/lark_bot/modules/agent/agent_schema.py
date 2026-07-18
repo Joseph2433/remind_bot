@@ -146,30 +146,35 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     if version > SCHEMA_VERSION:
         raise RuntimeError(f"unsupported agent schema version {version}; maximum is {SCHEMA_VERSION}")
     connection.execute("PRAGMA foreign_keys = OFF")
-    connection.execute("BEGIN IMMEDIATE")
-    _legacy_schema(connection)
-    _canonical_schema(connection)
-    if version < SCHEMA_VERSION:
-        request_expr = "json_quote(request_id)" if version == 1 else "request_id"
-        connection.execute(
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _legacy_schema(connection)
+        _canonical_schema(connection)
+        if version < SCHEMA_VERSION:
+            request_expr = "json_quote(request_id)" if version == 1 else "request_id"
+            connection.execute(
             """INSERT OR IGNORE INTO agent_sessions
             (id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
             SELECT id,'codex',name,thread_id,turn_id,cwd,model,sandbox,NULL,status,summary,created_at,updated_at FROM codex_sessions"""
-        )
-        connection.execute(
+            )
+            connection.execute(
             """INSERT OR IGNORE INTO agent_interactions
             (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
             SELECT id,session_id,""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
-        )
-        connection.execute("INSERT OR IGNORE INTO agent_event_dedupe(agent,event_id,received_at) SELECT 'codex',event_id,received_at FROM codex_event_dedupe")
-        connection.execute(
+            )
+            connection.execute("INSERT OR IGNORE INTO agent_event_dedupe(agent,event_id,received_at) SELECT 'codex',event_id,received_at FROM codex_event_dedupe")
+            connection.execute(
             """INSERT OR IGNORE INTO agent_notification_outbox
             (id,session_id,agent,session_name,interaction_id,notification_type,payload_summary,attempt_count,next_attempt_at,sent_at,last_error,created_at)
             SELECT o.id,o.session_id,'codex',COALESCE(o.session_name,s.name),o.interaction_id,o.notification_type,o.payload_summary,o.attempt_count,o.next_attempt_at,o.sent_at,o.last_error,o.created_at
             FROM notification_outbox o LEFT JOIN codex_sessions s ON s.id=o.session_id"""
-        )
-        connection.execute("INSERT OR IGNORE INTO agent_audit(id,agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) SELECT id,'codex',session_id,interaction_id,event_type,actor_id,detail_summary,created_at FROM codex_audit")
-    _codex_mirror_triggers(connection)
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    connection.commit()
-    connection.execute("PRAGMA foreign_keys = ON")
+            )
+            connection.execute("INSERT OR IGNORE INTO agent_audit(id,agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) SELECT id,'codex',session_id,interaction_id,event_type,actor_id,detail_summary,created_at FROM codex_audit")
+        _codex_mirror_triggers(connection)
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
