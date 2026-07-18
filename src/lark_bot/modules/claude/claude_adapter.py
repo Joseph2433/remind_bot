@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from uuid import uuid4
 
 from lark_bot.core.redaction import redact_text
 from lark_bot.modules.agent.agent_model import AgentKind
@@ -38,7 +39,7 @@ def claude_event_to_notification(event: ClaudeEvent) -> NotificationRequest:
 
     status, semantic_tag, extra_tags = _event_semantics(event, event_name)
     safe_summary = _safe_summary(event)
-    event_id = _event_id(event, original_event_name)
+    event_id = _event_id(event, event_name, status)
     return build_agent_notification(
         AgentNotificationInput(
             agent=AgentKind.CLAUDE,
@@ -86,27 +87,25 @@ def _event_semantics(event: ClaudeEvent, event_name: str) -> tuple[TaskStatus, s
     raise ValueError(f"Unsupported Claude notification type: {event.notification_type!r}")
 
 
-def _event_id(event: ClaudeEvent, original_event_name: str) -> str:
-    prompt = event.prompt_id or "-"
-    discriminator = event.notification_type or event.source or event.reason or event.error or "-"
-    tool_digest = _tool_input_digest(event.tool_input)
-    if event.tool_name or tool_digest:
-        discriminator = f"{discriminator}|{event.tool_name or '-'}|{tool_digest}"
-    payload = "|".join((event.session_id, prompt, original_event_name, discriminator))
+def _event_id(event: ClaudeEvent, event_name: str, status: TaskStatus) -> str:
+    if event.event_id:
+        return event.event_id
+    if status is TaskStatus.WAITING_FOR_INPUT:
+        return uuid4().hex
+
+    discriminator = _normalized_identity_value(
+        event.notification_type or event.source or event.reason or event.error or "-"
+    )
+    payload = json.dumps(
+        [event.session_id, event.prompt_id or "-", event_name, discriminator],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _tool_input_digest(value: object) -> str:
-    if value is None:
-        return "-"
-    canonical = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def _normalized_identity_value(value: str) -> str:
+    return " ".join(value.split()).casefold()
 
 
 def _safe_text(value: str, *, limit: int) -> str:
@@ -114,7 +113,7 @@ def _safe_text(value: str, *, limit: int) -> str:
 
 
 def _safe_summary(event: ClaudeEvent) -> str:
-    for value in (event.message, event.title, event.error):
+    for value in (event.message, event.title, event.reason, event.error):
         if value:
             return _safe_text(value, limit=_SUMMARY_LIMIT)
     return ""

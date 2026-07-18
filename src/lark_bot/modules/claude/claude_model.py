@@ -10,6 +10,7 @@ class ClaudeEvent(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=200)
     hook_event_name: str = Field(min_length=1, max_length=100)
+    event_id: str | None = Field(default=None, min_length=1, max_length=200)
     prompt_id: str | None = Field(default=None, max_length=200)
     source: str | None = Field(default=None, max_length=100)
     reason: str | None = Field(default=None, max_length=100)
@@ -17,8 +18,6 @@ class ClaudeEvent(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     message: str | None = Field(default=None, max_length=1000)
     error: str | None = Field(default=None, max_length=100)
-    tool_name: str | None = Field(default=None, max_length=100, exclude=True, repr=False)
-    tool_input: Any = Field(default=None, exclude=True, repr=False)
     stop_hook_active: bool | None = None
 
     @model_validator(mode="before")

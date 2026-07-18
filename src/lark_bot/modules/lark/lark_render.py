@@ -289,7 +289,7 @@ def _closes_fence(
 
 
 def _status_template(status: TaskStatus) -> HeaderTemplate:
-    if status is TaskStatus.SUCCEEDED:
+    if status in {TaskStatus.SUCCEEDED, TaskStatus.COMPLETED}:
         return "green"
     if status is TaskStatus.FAILED:
         return "red"

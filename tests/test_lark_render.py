@@ -54,6 +54,15 @@ def test_task_card_redacts_secrets_and_maps_status_color():
     assert "Need user input" in markdown
 
 
+def test_completed_task_card_uses_green_status_color() -> None:
+    rendered = render_task_notification(
+        _request(status=TaskStatus.COMPLETED, tags=["turn_completed"]),
+        message_format="card",
+    )
+
+    assert rendered.content["header"]["template"] == "green"
+
+
 def test_task_card_preserves_output_markdown_without_outer_code_fence():
     request = _request(stdout_tail=["## 结果", "", "```python", "print('ok')", "```"])
 

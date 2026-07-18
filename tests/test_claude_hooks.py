@@ -96,7 +96,7 @@ def test_sensitive_hook_extras_are_not_stored_in_notification() -> None:
         assert secret not in serialized
 
 
-def test_permission_tool_identity_uses_digest_without_leaking_tool_data() -> None:
+def test_repeated_raw_permission_requests_get_distinct_event_ids() -> None:
     first = claude_event_to_notification(
         ClaudeEvent(
             session_id="session",
@@ -112,25 +112,96 @@ def test_permission_tool_identity_uses_digest_without_leaking_tool_data() -> Non
             hook_event_name="PermissionRequest",
             prompt_id="prompt-1",
             tool_name="bash",
-            tool_input={"command": "echo two", "z": 2},
-        )
-    )
-    same = claude_event_to_notification(
-        ClaudeEvent(
-            session_id="session",
-            hook_event_name="PermissionRequest",
-            prompt_id="prompt-1",
-            tool_name="bash",
             tool_input={"z": 2, "command": "echo one"},
         )
     )
 
     assert first.event_id != second.event_id
     assert first.dedupe_key != second.dedupe_key
-    assert first.event_id == same.event_id
     serialized = first.model_dump_json()
     assert "bash" not in serialized
     assert "echo one" not in serialized
+
+
+def test_repeated_raw_waiting_notifications_get_distinct_event_ids() -> None:
+    event = ClaudeEvent(
+        session_id="session",
+        hook_event_name="Notification",
+        prompt_id="prompt-1",
+        notification_type="permission_prompt",
+    )
+
+    first = claude_event_to_notification(event)
+    second = claude_event_to_notification(event)
+
+    assert first.event_id != second.event_id
+
+
+def test_explicit_safe_event_id_keeps_action_request_idempotent() -> None:
+    first = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="PermissionRequest",
+            prompt_id="prompt-1",
+            event_id="safe-event-1",
+            tool_input={"command": "private one"},
+        )
+    )
+    second = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="PermissionRequest",
+            prompt_id="prompt-1",
+            event_id="safe-event-1",
+            tool_input={"command": "private two"},
+        )
+    )
+
+    assert first.event_id == "safe-event-1"
+    assert second.event_id == first.event_id
+    assert second.dedupe_key == first.dedupe_key
+
+
+def test_deterministic_event_identity_avoids_delimiter_collisions() -> None:
+    first = claude_event_to_notification(
+        ClaudeEvent(session_id="a|b", hook_event_name="Stop")
+    )
+    second = claude_event_to_notification(
+        ClaudeEvent(session_id="a", prompt_id="b|-", hook_event_name="Stop")
+    )
+
+    assert first.event_id != second.event_id
+
+
+def test_deterministic_event_identity_normalizes_safe_discriminator() -> None:
+    first = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name=" Notification ",
+            notification_type=" AUTH_SUCCESS ",
+        )
+    )
+    second = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="notification",
+            notification_type="auth_success",
+        )
+    )
+
+    assert first.event_id == second.event_id
+
+
+def test_session_end_uses_redacted_reason_summary() -> None:
+    request = claude_event_to_notification(
+        ClaudeEvent(
+            session_id="session",
+            hook_event_name="SessionEnd",
+            reason="logout token=private-value",
+        )
+    )
+
+    assert request.task.stdout_tail == ["logout token=[REDACTED]"]
 
 
 def test_repeated_permissions_with_distinct_prompt_ids_have_distinct_dedupe_keys() -> None:
