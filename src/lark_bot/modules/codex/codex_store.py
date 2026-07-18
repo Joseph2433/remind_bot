@@ -76,7 +76,7 @@ class SQLiteCodexStore:
     def cancel_pending_interactions(self, session_id: str, *, status: InteractionStatus, resolved_at: datetime | None = None) -> list[str]: return self._store.cancel_pending_interactions(session_id, status=SharedInteractionStatus(status.value), resolved_at=resolved_at)
     def claim_session_terminal(self, session_id: str, terminal_status: SessionStatus, summary: str, pending_status: InteractionStatus, updated_at: datetime) -> list[str] | None: return self._store.claim_session_terminal(session_id, SharedSessionStatus(terminal_status.value), summary, SharedInteractionStatus(pending_status.value), updated_at)
     def finish_interactive_turn(self, session_id: str, *, turn_id: str, summary: str, updated_at: datetime) -> list[str] | None: return self._store.finish_interactive_turn(session_id, turn_id=turn_id, summary=summary, updated_at=updated_at)
-    def record_event_once(self, event_id: str, *, received_at: datetime | None = None) -> bool: return self._store.record_event_once(event_id, received_at=received_at)
+    def record_event_once(self, event_id: str, *, received_at: datetime | None = None) -> bool: return self._store.record_event_once(event_id, received_at=received_at, agent=AgentKind.CODEX)
     def enqueue_outbox(self, **kwargs: object) -> int:
         kwargs.setdefault("agent", AgentKind.CODEX)
         return self._store.enqueue_outbox(**kwargs)  # type: ignore[arg-type]
@@ -88,7 +88,9 @@ class SQLiteCodexStore:
     def mark_outbox_sent(self, outbox_id: int, *, sent_at: datetime | None = None) -> bool: return self._store.mark_outbox_sent(outbox_id, sent_at=sent_at)
     def record_outbox_failure(self, outbox_id: int, *, error: str, next_attempt_at: datetime) -> bool: return self._store.record_outbox_failure(outbox_id, error=error, next_attempt_at=next_attempt_at)
     def reconcile_startup(self, *, now: datetime | None = None) -> StartupReconciliationResult: return StartupReconciliationResult.model_validate(self._store.reconcile_startup(now=now, agent=AgentKind.CODEX).model_dump())
-    def record_audit(self, **kwargs: object) -> int: return self._store.record_audit(**kwargs)  # type: ignore[arg-type]
+    def record_audit(self, **kwargs: object) -> int:
+        kwargs.setdefault("agent", AgentKind.CODEX)
+        return self._store.record_audit(**kwargs)  # type: ignore[arg-type]
     def list_audit(self, *, session_id: str | None = None) -> list[CodexAuditEntry]: return [CodexAuditEntry.model_validate(v.model_dump()) for v in self._store.list_audit(session_id=session_id, agent=AgentKind.CODEX)]
 
     @contextmanager

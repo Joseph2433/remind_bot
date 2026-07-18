@@ -65,7 +65,7 @@ def _canonical_schema(connection: sqlite3.Connection) -> None:
             lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
             resolved_at TEXT, expires_at TEXT, actor_id TEXT, decision TEXT
         );
-        CREATE TABLE IF NOT EXISTS agent_event_dedupe (event_id TEXT PRIMARY KEY, received_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS agent_event_dedupe (agent TEXT NOT NULL, event_id TEXT NOT NULL, received_at TEXT NOT NULL, PRIMARY KEY(agent,event_id));
         CREATE TABLE IF NOT EXISTS agent_notification_outbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
             agent TEXT, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(id),
@@ -74,7 +74,7 @@ def _canonical_schema(connection: sqlite3.Connection) -> None:
             sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS agent_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
+            id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, session_id TEXT REFERENCES agent_sessions(id),
             interaction_id TEXT REFERENCES agent_interactions(id), event_type TEXT NOT NULL,
             actor_id TEXT, detail_summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
         );
@@ -91,6 +91,10 @@ def _canonical_schema(connection: sqlite3.Connection) -> None:
 
 def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
     sql = """
+        CREATE TRIGGER IF NOT EXISTS trg_agent_dedupe_codex_insert
+        AFTER INSERT ON agent_event_dedupe WHEN NEW.agent='codex' BEGIN
+          INSERT OR IGNORE INTO codex_event_dedupe(event_id,received_at) VALUES(NEW.event_id,NEW.received_at);
+        END;
         CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_insert
         AFTER INSERT ON agent_sessions WHEN NEW.agent='codex' BEGIN
           INSERT OR IGNORE INTO codex_sessions(id,thread_id,turn_id,name,cwd,model,sandbox,status,summary,created_at,updated_at)
@@ -157,14 +161,14 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
             SELECT id,session_id,""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
         )
-        connection.execute("INSERT OR IGNORE INTO agent_event_dedupe SELECT event_id,received_at FROM codex_event_dedupe")
+        connection.execute("INSERT OR IGNORE INTO agent_event_dedupe(agent,event_id,received_at) SELECT 'codex',event_id,received_at FROM codex_event_dedupe")
         connection.execute(
             """INSERT OR IGNORE INTO agent_notification_outbox
             (id,session_id,agent,session_name,interaction_id,notification_type,payload_summary,attempt_count,next_attempt_at,sent_at,last_error,created_at)
             SELECT o.id,o.session_id,'codex',COALESCE(o.session_name,s.name),o.interaction_id,o.notification_type,o.payload_summary,o.attempt_count,o.next_attempt_at,o.sent_at,o.last_error,o.created_at
             FROM notification_outbox o LEFT JOIN codex_sessions s ON s.id=o.session_id"""
         )
-        connection.execute("INSERT OR IGNORE INTO agent_audit SELECT id,session_id,interaction_id,event_type,actor_id,detail_summary,created_at FROM codex_audit")
+        connection.execute("INSERT OR IGNORE INTO agent_audit(id,agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) SELECT id,'codex',session_id,interaction_id,event_type,actor_id,detail_summary,created_at FROM codex_audit")
     _codex_mirror_triggers(connection)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     connection.commit()

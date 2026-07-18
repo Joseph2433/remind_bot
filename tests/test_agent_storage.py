@@ -56,3 +56,26 @@ def test_user_input_resolution_is_submitted_summary():
         store.create_interaction(AgentInteraction(interaction_id="i", session_id="s", request_id="r", kind=InteractionKind.USER_INPUT, requested_at=now, expires_at=now))
         assert store.resolve_interaction("i", decision="token=secret reply", actor_id="u", resolved_at=now)
         assert store.get_interaction("i").decision == "submitted"
+
+
+def test_provider_scoped_conversation_lookup_with_same_conversation():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        for agent in (AgentKind.CODEX, AgentKind.CLAUDE):
+            store.create(AgentSession(session_id=agent.value, agent=agent, name=agent.value, conversation_id="same", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+        assert store.get_by_conversation("same", agent=AgentKind.CODEX).agent is AgentKind.CODEX
+        assert store.get_by_conversation("same", agent=AgentKind.CLAUDE).agent is AgentKind.CLAUDE
+
+
+def test_claude_rows_do_not_mirror_legacy_tables():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="claude", agent=AgentKind.CLAUDE, name="c", status=SessionStatus.RUNNING, created_at=now, updated_at=now))
+        with store._connection() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM codex_sessions").fetchone()[0] == 0
+
+
+def test_event_dedupe_is_provider_scoped():
+    with SQLiteAgentStore(":memory:") as store:
+        assert store.record_event_once("same", agent=AgentKind.CODEX)
+        assert store.record_event_once("same", agent=AgentKind.CLAUDE)

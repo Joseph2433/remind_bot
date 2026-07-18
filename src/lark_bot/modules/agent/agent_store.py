@@ -224,8 +224,8 @@ class SQLiteAgentStore:
             ids = [r["id"] for r in c.execute("SELECT id FROM agent_interactions WHERE session_id=? AND status=? ORDER BY id", (session_id,InteractionStatus.PENDING.value)).fetchall()]; c.execute("UPDATE agent_interactions SET status=?,resolved_at=? WHERE session_id=? AND status=?", (InteractionStatus.CANCELLED.value,stamp,session_id,InteractionStatus.PENDING.value))
         return ids
 
-    def record_event_once(self, event_id: str, *, received_at: datetime | None = None) -> bool:
-        with self._connection() as c: cur = c.execute("INSERT OR IGNORE INTO agent_event_dedupe(event_id,received_at) VALUES (?,?)", (event_id,serialize_datetime(received_at or datetime.now(timezone.utc))))
+    def record_event_once(self, event_id: str, *, received_at: datetime | None = None, agent: AgentKind | str = AgentKind.CODEX) -> bool:
+        with self._connection() as c: cur = c.execute("INSERT OR IGNORE INTO agent_event_dedupe(agent,event_id,received_at) VALUES (?,?,?)", (AgentKind(agent).value,event_id,serialize_datetime(received_at or datetime.now(timezone.utc))))
         return cur.rowcount == 1
 
     def enqueue_outbox(self, *, notification_type: str, payload_summary: str, session_id: str | None = None, agent: AgentKind | str | None = None, session_name: str | None = None, interaction_id: str | None = None, next_attempt_at: datetime | None = None, created_at: datetime | None = None) -> int:
@@ -266,14 +266,14 @@ class SQLiteAgentStore:
             c.execute(f"UPDATE agent_sessions SET status=?,updated_at=? WHERE {where}", [SessionStatus.INTERRUPTED.value,stamp,*args]); c.execute(f"UPDATE agent_interactions SET status=?,resolved_at=? WHERE id IN ({','.join('?' for _ in interactions)})", [InteractionStatus.EXPIRED.value,stamp,*interactions]) if interactions else None
         return StartupReconciliationResult(session_ids=sessions,interaction_ids=interactions)
 
-    def record_audit(self, *, event_type: str, detail_summary: str = "", session_id: str | None = None, interaction_id: str | None = None, actor_id: str | None = None, created_at: datetime | None = None) -> int:
-        with self._connection() as c: cur = c.execute("INSERT INTO agent_audit(session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES (?,?,?,?,?,?)", (session_id,interaction_id,event_type,actor_id,safe_summary(detail_summary),serialize_datetime(created_at or datetime.now(timezone.utc))))
+    def record_audit(self, *, event_type: str, detail_summary: str = "", session_id: str | None = None, interaction_id: str | None = None, actor_id: str | None = None, created_at: datetime | None = None, agent: AgentKind | str = AgentKind.CODEX) -> int:
+        with self._connection() as c: cur = c.execute("INSERT INTO agent_audit(agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES (?,?,?,?,?,?,?)", (AgentKind(agent).value,session_id,interaction_id,event_type,actor_id,safe_summary(detail_summary),serialize_datetime(created_at or datetime.now(timezone.utc))))
         return int(cur.lastrowid)
 
     def list_audit(self, *, session_id: str | None = None, agent: AgentKind | str | None = None) -> list[AgentAuditEntry]:
         query = "SELECT a.* FROM agent_audit a LEFT JOIN agent_sessions s ON s.id=a.session_id"; clauses: list[str] = []; args: list[object] = []
         if session_id is not None: clauses.append("a.session_id=?"); args.append(session_id)
-        if agent is not None: clauses.append("(s.agent=? OR a.session_id IS NULL)"); args.append(AgentKind(agent).value)
+        if agent is not None: clauses.append("a.agent=?"); args.append(AgentKind(agent).value)
         if clauses: query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY a.created_at,a.id"
         with self._connection() as c: rows = c.execute(query,args).fetchall()
