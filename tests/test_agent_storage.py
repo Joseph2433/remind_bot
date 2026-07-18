@@ -1,8 +1,24 @@
 from datetime import datetime, timezone
+import inspect
 
 from lark_bot.modules.agent.agent_model import AgentKind, AgentInteraction, AgentSession, InteractionKind, SessionStatus
 from lark_bot.modules.agent.agent_store import SQLiteAgentStore
 from lark_bot.modules.agent import agent_schema
+from lark_bot.modules.codex import codex_schema
+
+
+def test_schema_migrations_are_explicit_and_shared():
+    source = inspect.getsource(agent_schema)
+    assert ".split(" not in source
+    assert "executescript" not in source
+    assert set(agent_schema.MIGRATIONS) == {1, 2, 3, 4}
+    assert all(agent_schema.MIGRATIONS[version] for version in range(1, 5))
+    assert any("json_quote(request_id)" in statement for statement in agent_schema.MIGRATIONS[2])
+    assert all(column in " ".join(agent_schema.MIGRATIONS[3]) for column in ("agent", "session_name"))
+    assert any("CREATE TABLE IF NOT EXISTS agent_sessions" in statement for statement in agent_schema.MIGRATIONS[4])
+    assert any("CREATE TRIGGER" in statement for statement in agent_schema.MIGRATIONS[4])
+    assert codex_schema.MIGRATIONS is agent_schema.MIGRATIONS
+    assert codex_schema.initialize_schema is agent_schema.initialize_schema
 
 
 def test_shared_schema_and_session_round_trip():
