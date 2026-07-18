@@ -47,6 +47,141 @@ def test_install_preserves_unrelated_settings_and_is_idempotent(workspace_tmp_pa
     assert check_hooks(tmp_path).status == "installed"
 
 
+def test_install_repairs_duplicate_owned_handlers_in_same_group(
+    workspace_tmp_path: Path,
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    unrelated = {"type": "command", "command": "other", "args": ["keep"]}
+    hooks = {
+        event: [{"hooks": [OWNED_HANDLER]}]
+        for event in installer.HOOK_EVENTS
+    }
+    hooks["Stop"] = [
+        {
+            "matcher": "same-group",
+            "metadata": {"owner": "user"},
+            "hooks": [OWNED_HANDLER, unrelated, OWNED_HANDLER],
+        }
+    ]
+    settings.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Read"]},
+                "custom": {"keep": True},
+                "hooks": hooks,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert check_hooks(workspace_tmp_path).status == "modified"
+    assert install_hooks(workspace_tmp_path).status == "installed"
+    first = settings.read_bytes()
+    value = json.loads(first)
+
+    assert value["permissions"] == {"allow": ["Read"]}
+    assert value["custom"] == {"keep": True}
+    assert value["hooks"]["Stop"] == [
+        {
+            "matcher": "same-group",
+            "metadata": {"owner": "user"},
+            "hooks": [OWNED_HANDLER, unrelated],
+        }
+    ]
+    for event in installer.HOOK_EVENTS:
+        assert sum(
+            handler == OWNED_HANDLER
+            for group in value["hooks"][event]
+            for handler in group["hooks"]
+        ) == 1
+
+    assert install_hooks(workspace_tmp_path).status == "installed"
+    assert settings.read_bytes() == first
+
+
+def test_install_repairs_duplicate_owned_handlers_across_groups(
+    workspace_tmp_path: Path,
+) -> None:
+    settings = workspace_tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    first_unrelated = {"type": "command", "command": "first-other"}
+    later_unrelated = {"type": "prompt", "prompt": {"provider": "other"}}
+    hooks = {
+        event: [{"hooks": [OWNED_HANDLER]}]
+        for event in installer.HOOK_EVENTS
+    }
+    hooks["Stop"] = [
+        {
+            "matcher": "first",
+            "label": "keep-first",
+            "hooks": [first_unrelated, OWNED_HANDLER],
+        },
+        {"matcher": "owned-only", "label": "remove", "hooks": [OWNED_HANDLER]},
+        {
+            "matcher": "later",
+            "metadata": {"keep": True},
+            "hooks": [OWNED_HANDLER, later_unrelated],
+        },
+    ]
+    settings.write_text(
+        json.dumps({"theme": "dark", "hooks": hooks}),
+        encoding="utf-8",
+    )
+
+    assert check_hooks(workspace_tmp_path).status == "modified"
+    assert install_hooks(workspace_tmp_path).status == "installed"
+    first = settings.read_bytes()
+    value = json.loads(first)
+
+    assert value["theme"] == "dark"
+    assert value["hooks"]["Stop"] == [
+        {
+            "matcher": "first",
+            "label": "keep-first",
+            "hooks": [first_unrelated, OWNED_HANDLER],
+        },
+        {
+            "matcher": "later",
+            "metadata": {"keep": True},
+            "hooks": [later_unrelated],
+        },
+    ]
+    for event in installer.HOOK_EVENTS:
+        assert sum(
+            handler == OWNED_HANDLER
+            for group in value["hooks"][event]
+            for handler in group["hooks"]
+        ) == 1
+
+    assert install_hooks(workspace_tmp_path).status == "installed"
+    assert settings.read_bytes() == first
+
+    value["hooks"]["Stop"][0]["hooks"].append(OWNED_HANDLER)
+    value["hooks"]["Stop"].append({"matcher": "duplicate", "hooks": [OWNED_HANDLER]})
+    settings.write_text(json.dumps(value), encoding="utf-8")
+
+    assert uninstall_hooks(workspace_tmp_path).status == "missing"
+    uninstalled = json.loads(settings.read_text(encoding="utf-8"))
+    assert uninstalled == {
+        "theme": "dark",
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "first",
+                    "label": "keep-first",
+                    "hooks": [first_unrelated],
+                },
+                {
+                    "matcher": "later",
+                    "metadata": {"keep": True},
+                    "hooks": [later_unrelated],
+                },
+            ]
+        },
+    }
+
+
 def test_uninstall_removes_only_owned_handlers(workspace_tmp_path: Path) -> None:
     tmp_path = workspace_tmp_path
     install_hooks(tmp_path)

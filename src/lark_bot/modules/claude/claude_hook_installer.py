@@ -589,11 +589,39 @@ def _groups(value: object) -> list[dict[str, object]]:
     return [group for group in value if isinstance(group, dict)]
 
 
-def _contains_exact(groups: object) -> bool:
-    return any(
-        isinstance(group.get("hooks"), list) and OWNED_HANDLER in group["hooks"]
+def _exact_count(groups: object) -> int:
+    return sum(
+        handler == OWNED_HANDLER
         for group in _groups(groups)
+        if isinstance(group.get("hooks"), list)
+        for handler in group["hooks"]
     )
+
+
+def _deduplicate_exact(groups: list[dict[str, object]]) -> list[dict[str, object]]:
+    found = False
+    kept_groups: list[dict[str, object]] = []
+    for group in groups:
+        handlers = group.get("hooks")
+        assert isinstance(handlers, list)
+        kept_handlers: list[object] = []
+        removed_duplicate = False
+        for handler in handlers:
+            if handler == OWNED_HANDLER:
+                if found:
+                    removed_duplicate = True
+                    continue
+                found = True
+            kept_handlers.append(handler)
+        if removed_duplicate:
+            if not kept_handlers:
+                continue
+            updated = dict(group)
+            updated["hooks"] = kept_handlers
+            kept_groups.append(updated)
+        else:
+            kept_groups.append(group)
+    return kept_groups
 
 
 def _contains_owned_variant(groups: object) -> bool:
@@ -659,7 +687,7 @@ def _validate_managed_hooks(value: dict[str, object]) -> HookCheck | None:
 
 def _has_all_owned(value: dict[str, object]) -> bool:
     hooks = _hooks(value, create=False)
-    return isinstance(hooks, dict) and all(_contains_exact(hooks.get(event)) for event in HOOK_EVENTS)
+    return isinstance(hooks, dict) and all(_exact_count(hooks.get(event)) == 1 for event in HOOK_EVENTS)
 
 
 def check_hooks(project: str | Path) -> HookCheck:
@@ -678,6 +706,8 @@ def check_hooks(project: str | Path) -> HookCheck:
         return HookCheck("missing")
     if any(_contains_owned_variant(hooks.get(event)) for event in HOOK_EVENTS):
         return HookCheck("modified", "managed Claude Hook handler differs")
+    if any(_exact_count(hooks.get(event)) > 1 for event in HOOK_EVENTS):
+        return HookCheck("modified", "duplicate managed Claude Hook handler")
     if _has_all_owned(value):
         return HookCheck("installed")
     return HookCheck("missing")
@@ -702,7 +732,13 @@ def _install_hooks_locked(path: Path) -> HookCheck:
     changed = False
     for event in HOOK_EVENTS:
         groups = hooks.get(event)
-        if _contains_exact(groups):
+        exact_count = _exact_count(groups)
+        if exact_count == 1:
+            continue
+        if exact_count > 1:
+            assert isinstance(groups, list)
+            hooks[event] = _deduplicate_exact(groups)
+            changed = True
             continue
         if groups is None:
             hooks[event] = [{"hooks": [copy.deepcopy(OWNED_HANDLER)]}]
