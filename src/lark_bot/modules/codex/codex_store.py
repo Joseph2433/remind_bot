@@ -55,7 +55,10 @@ class SQLiteCodexStore:
         self._store.update(data); return _session_from_agent(data)
 
     def update_session_if_status(self, session_id: str, expected_statuses: tuple[SessionStatus, ...], *, status: SessionStatus, thread_id: str | None | object = _UNSET, turn_id: str | None | object = _UNSET, summary: str | None = None, updated_at: datetime | None = None) -> bool:
-        return self._store.update_if_status(session_id, tuple(SharedSessionStatus(v.value) for v in expected_statuses), status=SharedSessionStatus(status.value), updated_at=updated_at, summary=summary, conversation_id=thread_id if thread_id is not _UNSET else None, turn_id=turn_id if turn_id is not _UNSET else None)
+        kwargs: dict[str, object] = {"status": SharedSessionStatus(status.value), "updated_at": updated_at, "summary": summary}
+        if thread_id is not _UNSET: kwargs["conversation_id"] = thread_id
+        if turn_id is not _UNSET: kwargs["turn_id"] = turn_id
+        return self._store.update_if_status(session_id, tuple(SharedSessionStatus(v.value) for v in expected_statuses), **kwargs)  # type: ignore[arg-type]
 
     def create_interaction(self, interaction: PendingInteraction) -> None: self._store.create_interaction(_interaction_to_agent(interaction))
     def create_interaction_and_mark_waiting(self, interaction: PendingInteraction, waiting_status: SessionStatus, updated_at: datetime) -> bool: return self._store.create_interaction_and_mark_waiting(_interaction_to_agent(interaction), SharedSessionStatus(waiting_status.value), updated_at)

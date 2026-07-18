@@ -46,7 +46,7 @@ def interaction_from_row(row: sqlite3.Row) -> AgentInteraction:
 
 def session_values(session: AgentSession) -> tuple[object, ...]:
     return (
-        session.session_id, session.agent.value, session.name, session.conversation_id,
+        session.session_id, session.session_id, session.agent.value, session.name, session.conversation_id,
         session.turn_id, session.cwd, session.model, session.sandbox, session.permission_mode,
         session.status.value, safe_summary(session.summary), serialize_datetime(session.created_at),
         serialize_datetime(session.updated_at),
@@ -55,7 +55,7 @@ def session_values(session: AgentSession) -> tuple[object, ...]:
 
 def interaction_values(interaction: AgentInteraction) -> tuple[object, ...]:
     return (
-        interaction.interaction_id, interaction.session_id, interaction.request_id,
+        interaction.interaction_id, interaction.interaction_id, interaction.session_id, interaction.request_id,
         interaction.kind.value, interaction.status.value, interaction.lark_message_id,
         safe_summary(interaction.payload_summary), serialize_datetime(interaction.requested_at),
         serialize_optional_datetime(interaction.resolved_at), serialize_optional_datetime(interaction.expires_at),

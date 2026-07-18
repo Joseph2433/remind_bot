@@ -35,6 +35,7 @@ class AgentSessionStore(Protocol):
 
 _ACTIVE = tuple(SessionStatus(value) for value in ("starting", "running", "waiting", "waiting_for_approval", "waiting_for_input"))
 _TERMINAL = tuple(SessionStatus(value) for value in ("succeeded", "failed", "interrupted", "cancelled"))
+_UNSET = object()
 
 
 class SQLiteAgentStore:
@@ -53,8 +54,10 @@ class SQLiteAgentStore:
     def create(self, session: AgentSession) -> None:
         with self._connection() as c:
             c.execute("""INSERT INTO agent_sessions
-                (session_id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", session_values(session))
+                (id,session_id,agent,name,conversation_id,turn_id,cwd,model,sandbox,permission_mode,status,summary,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", session_values(session))
+
+    create_session = create
 
     def get(self, session_id: str, *, agent: AgentKind | str | None = None) -> AgentSession | None:
         query = "SELECT * FROM agent_sessions WHERE session_id = ?"
@@ -65,6 +68,8 @@ class SQLiteAgentStore:
             row = c.execute(query, args).fetchone()
         return session_from_row(row) if row else None
 
+    get_session = get
+
     def get_by_conversation(self, conversation_id: str, *, agent: AgentKind | str | None = None) -> AgentSession | None:
         query = "SELECT * FROM agent_sessions WHERE conversation_id = ?"; args: list[object] = [conversation_id]
         if agent is not None:
@@ -72,6 +77,8 @@ class SQLiteAgentStore:
         query += " ORDER BY created_at, session_id LIMIT 1"
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return session_from_row(row) if row else None
+
+    get_session_by_conversation = get_by_conversation
 
     def list(self, *, status: SessionStatus | None = None, agent: AgentKind | str | None = None) -> list[AgentSession]:
         query = "SELECT * FROM agent_sessions"; clauses: list[str] = []; args: list[object] = []
@@ -82,28 +89,34 @@ class SQLiteAgentStore:
         with self._connection() as c: rows = c.execute(query, args).fetchall()
         return [session_from_row(row) for row in rows]
 
+    list_sessions = list
+
     def update(self, session: AgentSession) -> None:
         with self._connection() as c:
-            c.execute("""UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE session_id=?""", session_values(session)[1:] + (session.session_id,))
+            c.execute("""UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE session_id=?""", session_values(session)[2:] + (session.session_id,))
 
-    def update_if_status(self, session_id: str, expected_statuses: tuple[SessionStatus, ...], *, status: SessionStatus, updated_at: datetime | None = None, summary: str | None = None, conversation_id: str | None | object = None, turn_id: str | None | object = None) -> bool:
+    update_session = update
+
+    def update_if_status(self, session_id: str, expected_statuses: tuple[SessionStatus, ...], *, status: SessionStatus, updated_at: datetime | None = None, summary: str | None = None, conversation_id: str | None | object = _UNSET, turn_id: str | None | object = _UNSET) -> bool:
         if not expected_statuses: return False
         assignments = ["status = ?", "updated_at = ?"]; args: list[object] = [SessionStatus(status).value, serialize_datetime(updated_at or datetime.now(timezone.utc))]
         if summary is not None: assignments.append("summary = ?"); args.append(safe_summary(summary))
-        if conversation_id is not None: assignments.append("conversation_id = ?"); args.append(conversation_id)
-        if turn_id is not None: assignments.append("turn_id = ?"); args.append(turn_id)
+        if conversation_id is not _UNSET: assignments.append("conversation_id = ?"); args.append(conversation_id)
+        if turn_id is not _UNSET: assignments.append("turn_id = ?"); args.append(turn_id)
         placeholders = ",".join("?" for _ in expected_statuses); args.extend([session_id, *(SessionStatus(s).value for s in expected_statuses)])
         with self._connection() as c:
             cur = c.execute(f"UPDATE agent_sessions SET {', '.join(assignments)} WHERE session_id = ? AND status IN ({placeholders})", args)
         return cur.rowcount == 1
+
+    update_session_if_status = update_if_status
 
     def create_interaction(self, interaction: AgentInteraction) -> None:
         if interaction.status is InteractionStatus.PENDING and any((interaction.resolved_at, interaction.actor_id, interaction.decision)):
             raise ValueError("pending interaction cannot contain resolution metadata")
         with self._connection() as c:
             c.execute("""INSERT INTO agent_interactions
-                (interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                (id,interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
 
     def get_interaction(self, interaction_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
         query = "SELECT i.* FROM agent_interactions i"; args: list[object] = [interaction_id]
@@ -134,7 +147,7 @@ class SQLiteAgentStore:
                 c.execute("BEGIN IMMEDIATE")
                 cur = c.execute("UPDATE agent_sessions SET status=?,updated_at=? WHERE session_id=? AND status IN (?,?,?,?,?)", (SessionStatus(waiting_status).value,serialize_datetime(updated_at),interaction.session_id,*[v.value for v in _ACTIVE]))
                 if cur.rowcount != 1: return False
-                c.execute("""INSERT INTO agent_interactions (interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                c.execute("""INSERT INTO agent_interactions (id,interaction_id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
         except sqlite3.IntegrityError: return False
         return True
 
