@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import hashlib
 import json
 import math
 import os
 import stat
+import sys
 import tempfile
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -48,6 +51,10 @@ class TargetSnapshot:
 
 
 class _SettingsLockError(RuntimeError):
+    pass
+
+
+class _ConcurrentTargetChange(RuntimeError):
     pass
 
 
@@ -272,16 +279,104 @@ def _target_matches(path: Path, snapshot: TargetSnapshot, parent_fd: int | None)
     return current == snapshot
 
 
-def _replace_in_parent(source: Path, destination: Path, parent_fd: int | None) -> None:
-    if parent_fd is not None:
-        os.replace(
-            source.name,
-            destination.name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
+def _posix_exchange(first: Path, second: Path, parent_fd: int | None) -> bool:
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux") and hasattr(library, "renameat2"):
+        renameat2 = library.renameat2
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        directory_fd = parent_fd if parent_fd is not None else -100
+        first_name = os.fsencode(first.name if parent_fd is not None else first)
+        second_name = os.fsencode(second.name if parent_fd is not None else second)
+        return renameat2(directory_fd, first_name, directory_fd, second_name, 0x2) == 0
+    if sys.platform == "darwin" and hasattr(library, "renamex_np"):
+        renamex_np = library.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        return renamex_np(os.fsencode(first), os.fsencode(second), 0x2) == 0
+    return False
+
+
+def _atomic_publish_existing(
+    canonical: Path,
+    replacement: Path,
+    parent_fd: int | None,
+    expected: TargetSnapshot,
+) -> Path | None:
+    if os.name == "nt":
+        if not _target_matches(canonical, expected, None):
+            raise _ConcurrentTargetChange
+        backup = canonical.with_name(f".{canonical.name}.backup.{uuid.uuid4().hex}.bak")
+        try:
+            os.link(canonical, backup, follow_symlinks=False)
+        except OSError:
+            return None
+        backup_snapshot = _snapshot_from_path(backup)
+        if backup_snapshot != expected or not _target_matches(canonical, expected, None):
+            _unlink_known(backup, None)
+            raise _ConcurrentTargetChange
+        try:
+            os.replace(replacement, canonical)
+        except OSError:
+            _unlink_known(backup, None)
+            return None
+        return backup
+    return replacement if _posix_exchange(canonical, replacement, parent_fd) else None
+
+
+def _atomic_restore_existing(
+    canonical: Path,
+    backup: Path,
+    parent_fd: int | None,
+    published_digest: str,
+) -> Path | None:
+    current = (
+        _snapshot_from_dir_fd(canonical.name, parent_fd)
+        if parent_fd is not None
+        else _snapshot_from_path(canonical)
+    )
+    if current is None or current.digest != published_digest:
+        raise _ConcurrentTargetChange
+    if os.name == "nt":
+        backup_content = _read_backup(backup, None)
+        if backup_content is None:
+            return None
+        raw, original_mode = backup_content
+        recovery_fd, recovery_name = tempfile.mkstemp(
+            prefix=f".{canonical.name}.recovery.",
+            suffix=".tmp",
+            dir=canonical.parent,
         )
-    else:
-        os.replace(source, destination)
+        recovery = Path(recovery_name)
+        try:
+            with os.fdopen(recovery_fd, "wb") as handle:
+                offset = 0
+                while offset < len(raw):
+                    written = handle.write(raw[offset:])
+                    if written is None or written <= 0:
+                        raise OSError("recovery write failed")
+                    offset += written
+                handle.flush()
+                os.fsync(handle.fileno())
+                try:
+                    os.chmod(recovery, original_mode)
+                except OSError:
+                    pass
+            current = _snapshot_from_path(canonical)
+            if current is None or current.digest != published_digest:
+                raise _ConcurrentTargetChange
+            os.replace(recovery, canonical)
+        except OSError:
+            _unlink_known(recovery, None)
+            return None
+        return backup
+    return backup if _posix_exchange(canonical, backup, parent_fd) else None
 
 
 def _link_no_overwrite(source: Path, destination: Path, parent_fd: int | None) -> bool:
@@ -358,102 +453,6 @@ def _read_backup(backup: Path, parent_fd: int | None) -> tuple[bytes, int] | Non
         os.close(fd)
 
 
-def _current_identity(path: Path, parent_fd: int | None) -> tuple[int, int, int, int, int, int] | None:
-    try:
-        result = (
-            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-            if parent_fd is not None
-            else os.lstat(path)
-        )
-    except OSError:
-        return None
-    return _target_identity_from_stat(result)
-
-
-def _same_created_file(
-    current: tuple[int, int, int, int, int, int] | None,
-    created: tuple[int, int, int, int, int, int],
-) -> bool:
-    return current is not None and (
-        current[0],
-        current[1],
-        stat.S_IFMT(current[2]),
-        current[3],
-    ) == (
-        created[0],
-        created[1],
-        stat.S_IFMT(created[2]),
-        created[3],
-    )
-
-
-def _remove_partial_restore(
-    destination: Path,
-    created: tuple[int, int, int, int, int, int],
-    parent_fd: int | None,
-) -> None:
-    if _same_created_file(_current_identity(destination, parent_fd), created):
-        _unlink_known(destination, parent_fd)
-
-
-def _restore_backup(backup: Path, destination: Path, parent_fd: int | None) -> bool:
-    if not _target_matches(destination, _missing_snapshot(), parent_fd):
-        _unlink_known(backup, parent_fd)
-        return True
-    backup_content = _read_backup(backup, parent_fd)
-    if backup_content is None:
-        return False
-    raw, original_mode = backup_content
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd: int | None = None
-    created: tuple[int, int, int, int, int, int] | None = None
-    try:
-        try:
-            fd = (
-                os.open(destination.name, flags, 0o600, dir_fd=parent_fd)
-                if parent_fd is not None
-                else os.open(destination, flags, 0o600)
-            )
-        except FileExistsError:
-            _unlink_known(backup, parent_fd)
-            return True
-        except OSError:
-            return False
-        created = _target_identity_from_stat(os.fstat(fd))
-        offset = 0
-        while offset < len(raw):
-            written = os.write(fd, raw[offset:])
-            if written <= 0:
-                raise OSError("restore write failed")
-            offset += written
-        try:
-            os.fchmod(fd, original_mode)
-        except (AttributeError, OSError):
-            pass
-        os.fsync(fd)
-    except OSError:
-        if fd is not None:
-            os.close(fd)
-            fd = None
-        if created is not None:
-            _remove_partial_restore(destination, created, parent_fd)
-        return False
-    finally:
-        if fd is not None:
-            os.close(fd)
-    restored = (
-        _snapshot_from_dir_fd(destination.name, parent_fd)
-        if parent_fd is not None
-        else _snapshot_from_path(destination)
-    )
-    if restored is None or restored.digest != hashlib.sha256(raw).hexdigest():
-        if created is not None:
-            _remove_partial_restore(destination, created, parent_fd)
-        return False
-    _unlink_known(backup, parent_fd)
-    return True
-
-
 def _write_atomic(
     path: Path,
     value: dict[str, object],
@@ -483,7 +482,8 @@ def _write_atomic(
             raise ValueError("Claude Hook settings directory changed")
     temp_path: Path | None = None
     backup_path: Path | None = None
-    backup_staged = False
+    published_existing = False
+    published_digest: str | None = None
     try:
         fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temp_path = Path(temp_name)
@@ -494,6 +494,10 @@ def _write_atomic(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        replacement_snapshot = _snapshot_from_path(temp_path)
+        if replacement_snapshot is None or replacement_snapshot.digest is None:
+            return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
+        published_digest = replacement_snapshot.digest
         _refuse_symlinks(path)
         if _parent_identity(path.parent) != parent_identity:
             raise ValueError("Claude Hook settings directory changed")
@@ -501,55 +505,69 @@ def _write_atomic(
         if target_snapshot.exists:
             if not _probe_hardlink_support(path, parent_fd):
                 return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
-            backup_fd, backup_name = tempfile.mkstemp(
-                prefix=f".{path.name}.backup.",
-                suffix=".bak",
-                dir=path.parent,
-            )
-            os.close(backup_fd)
-            backup_path = Path(backup_name)
             _refuse_symlinks(path)
             if _parent_identity(path.parent) != parent_identity:
                 raise ValueError("Claude Hook settings directory changed")
             try:
-                _replace_in_parent(path, backup_path, parent_fd)
-            except FileNotFoundError:
+                backup_path = _atomic_publish_existing(
+                    path,
+                    temp_path,
+                    parent_fd,
+                    target_snapshot,
+                )
+            except _ConcurrentTargetChange:
                 return HookCheck("modified", _CONCURRENT_CHANGE_DETAIL)
-            backup_staged = True
+            if backup_path is None:
+                return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
+            published_existing = True
             backup_snapshot = (
                 _snapshot_from_dir_fd(backup_path.name, parent_fd)
                 if parent_fd is not None
                 else _snapshot_from_path(backup_path)
             )
             if backup_snapshot != target_snapshot:
-                if _restore_backup(backup_path, path, parent_fd):
-                    backup_staged = False
+                try:
+                    displaced = _atomic_restore_existing(
+                        path,
+                        backup_path,
+                        parent_fd,
+                        published_digest,
+                    )
+                except _ConcurrentTargetChange:
+                    _unlink_known(backup_path, parent_fd)
+                    published_existing = False
+                else:
+                    if displaced is not None:
+                        _unlink_known(displaced, parent_fd)
+                        published_existing = False
                 return HookCheck("modified", _CONCURRENT_CHANGE_DETAIL)
+            _unlink_known(backup_path, parent_fd)
+            published_existing = False
+            return None
 
         if _parent_identity(path.parent) != parent_identity:
             raise ValueError("Claude Hook settings directory changed")
         try:
             published = _link_no_overwrite(temp_path, path, parent_fd)
         except OSError:
-            if backup_staged and backup_path is not None:
-                if _restore_backup(backup_path, path, parent_fd):
-                    backup_staged = False
             return HookCheck("modified", _PUBLISH_FAILURE_DETAIL)
         if not published:
-            if backup_path is not None:
-                _unlink_known(backup_path, parent_fd)
-                backup_staged = False
             return HookCheck("modified", _CONCURRENT_CHANGE_DETAIL)
-
-        if backup_path is not None:
-            _unlink_known(backup_path, parent_fd)
-            backup_staged = False
         return None
     finally:
-        if backup_staged and backup_path is not None:
-            _restore_backup(backup_path, path, parent_fd)
-        elif backup_path is not None:
-            _unlink_known(backup_path, parent_fd)
+        if published_existing and backup_path is not None and published_digest is not None:
+            try:
+                displaced = _atomic_restore_existing(
+                    path,
+                    backup_path,
+                    parent_fd,
+                    published_digest,
+                )
+            except _ConcurrentTargetChange:
+                _unlink_known(backup_path, parent_fd)
+            else:
+                if displaced is not None:
+                    _unlink_known(displaced, parent_fd)
         if temp_path is not None:
             _unlink_known(temp_path, parent_fd)
         if parent_fd is not None:
