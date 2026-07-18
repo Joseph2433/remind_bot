@@ -67,7 +67,7 @@ class CodexOrchestrator:
         id_factory: Callable[[], str],
         interaction_timeout_seconds: int = 1800,
         event_queue_capacity: int = 100,
-        notification_delay_seconds: float = 5.0,
+        notification_delay_seconds: float = 0.0,
     ) -> None:
         if interaction_timeout_seconds <= 0:
             raise ValueError("interaction timeout must be positive")

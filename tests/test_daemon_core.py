@@ -101,7 +101,7 @@ def _runtime(tmp_path: Path, interactive_manager=None):
     settings = SimpleNamespace(
         outbox_poll_seconds=0.01,
         interaction_expiry_poll_seconds=0.01,
-        notification_delay_seconds=5.0,
+        notification_delay_seconds=0.0,
         daemon_token_path=tmp_path / "token",
         message_format="card",
     )
@@ -182,12 +182,12 @@ def test_hook_endpoint_bounds_and_deduplicates(workspace_tmp_path):
         assert client.post("/api/v1/codex/hooks", headers=headers, json=payload).status_code == 202
         assert len(store.items) == 1 and "secret output" not in store.items[0].payload_summary
         assert store.items[0].created_at == NOW
-        assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
-        assert lark.messages == []
+        assert store.items[0].next_attempt_at == NOW
+        assert lark.messages == ["hook:Stop\nCodex hook Stop"]
         assert client.post("/api/v1/codex/hooks", headers=headers, content=b"x" * 65537).status_code == 413
 
 
-def test_spool_hook_uses_notification_delay(workspace_tmp_path):
+def test_spool_hook_is_available_immediately(workspace_tmp_path):
     runtime, store, *_ = _runtime(workspace_tmp_path)
     spool = workspace_tmp_path / "spool"
     spool.mkdir()
@@ -199,7 +199,7 @@ def test_spool_hook_uses_notification_delay(workspace_tmp_path):
     runtime._drain_spool()
 
     assert store.items[0].created_at == NOW
-    assert store.items[0].next_attempt_at == NOW + timedelta(seconds=5)
+    assert store.items[0].next_attempt_at == NOW
 
 
 def test_runtime_sends_outbox_and_attaches_interaction(workspace_tmp_path):
@@ -291,7 +291,7 @@ def test_runtime_retries_expiry_after_safe_degradation(workspace_tmp_path):
         assert any(
             item.notification_type == "runtime:degraded"
             and item.payload_summary == "Interaction expiry unavailable (RuntimeError)"
-            and item.next_attempt_at == NOW + timedelta(seconds=5)
+            and item.next_attempt_at == NOW
             for item in store.items
         )
         await runtime.close()

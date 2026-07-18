@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     interaction_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     interaction_expiry_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     outbox_poll_seconds: float = Field(default=0.5, gt=0, le=60)
-    notification_delay_seconds: float = Field(default=5.0, ge=0, le=300)
+    notification_delay_seconds: float = Field(default=0.0, ge=0, le=300)
     lark_event_queue_capacity: int = Field(default=100, ge=1, le=10000)
     message_format: MessageFormat = "card"
 

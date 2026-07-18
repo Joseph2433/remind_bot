@@ -58,7 +58,7 @@ LARK_BOT_CODEX_PATH=codex
 LARK_BOT_INTERACTION_TIMEOUT_SECONDS=1800
 LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
 LARK_BOT_OUTBOX_POLL_SECONDS=0.5
-LARK_BOT_NOTIFICATION_DELAY_SECONDS=5.0
+LARK_BOT_NOTIFICATION_DELAY_SECONDS=0.0
 LARK_BOT_LARK_EVENT_QUEUE_CAPACITY=100
 LARK_BOT_MESSAGE_FORMAT=card
 ```
@@ -149,7 +149,7 @@ The installed Codex app-server accepts a secondary picker client and lets it lis
 
 The terminal remains the primary Codex interface. Full streaming output, shortcuts, prompts, and conversation history are rendered by the native Codex TUI. Lark Bot runs a loopback-only structured gateway beside it; it never parses terminal escape sequences.
 
-All Lark notifications are delayed by five seconds. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
+Lark notifications are sent immediately by default. Set `LARK_BOT_NOTIFICATION_DELAY_SECONDS` to a positive value when a delay is needed. For approval and input requests, the terminal and Lark use first-response-wins semantics: the first valid response is forwarded to Codex, and a late response is ignored as already resolved. Long-press the exact approval message, choose Reply, then send `yes` or `y` to approve and `no` or `n` to deny. Reply to the exact input message; in a group chat, mention the Bot. For multiple questions, reply with one `1: answer` line per question.
 
 If the daemon is intentionally unavailable, launch Codex without any Lark callback or gateway:
 

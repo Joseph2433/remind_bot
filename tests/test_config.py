@@ -41,7 +41,7 @@ def test_daemon_settings_have_safe_defaults():
     assert settings.interaction_timeout_seconds == 1800
     assert settings.interaction_expiry_poll_seconds == 1.0
     assert settings.outbox_poll_seconds == 0.5
-    assert settings.notification_delay_seconds == 5.0
+    assert settings.notification_delay_seconds == 0.0
     assert settings.message_format == "card"
 
 
