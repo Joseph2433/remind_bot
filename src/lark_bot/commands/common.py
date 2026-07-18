@@ -6,15 +6,12 @@ import logging
 from pydantic import ValidationError
 import typer
 
+from lark_bot.core.logging import configure_logging
 from lark_bot.config import Settings
 from lark_bot.lark.client import LarkBotClient
 from lark_bot.models import NotificationRequest
 from lark_bot.notifications.adapters.codex import CodexEvent, codex_event_to_notification
 from lark_bot.storage.sqlite import SQLiteNotificationStore
-
-
-def configure_logging(level: str) -> None:
-    logging.basicConfig(level=level.upper(), format="%(levelname)s %(name)s: %(message)s")
 
 
 def send_with_dedupe(request: NotificationRequest, settings: Settings) -> None:
