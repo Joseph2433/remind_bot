@@ -36,6 +36,11 @@ def _settings_path(project: str | Path) -> Path:
     return Path(project).resolve() / ".claude" / "settings.json"
 
 
+def _refuse_symlinks(path: Path) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError("refusing to replace symlink Claude Hook settings")
+
+
 def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
     try:
         raw = path.read_text(encoding="utf-8")
@@ -53,8 +58,7 @@ def _read(path: Path) -> tuple[dict[str, object] | None, HookCheck | None]:
 
 
 def _write_atomic(path: Path, value: dict[str, object]) -> None:
-    if path.is_symlink():
-        raise ValueError("refusing to replace symlink settings.json")
+    _refuse_symlinks(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
@@ -64,8 +68,7 @@ def _write_atomic(path: Path, value: dict[str, object]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        if path.is_symlink():
-            raise ValueError("refusing to replace symlink settings.json")
+        _refuse_symlinks(path)
         temp_path.replace(path)
     finally:
         try:
@@ -108,6 +111,26 @@ def _contains_owned_variant(groups: object) -> bool:
     return False
 
 
+def _validate_managed_hooks(value: dict[str, object]) -> HookCheck | None:
+    hooks = value.get("hooks")
+    if hooks is None:
+        return None
+    if not isinstance(hooks, dict):
+        return HookCheck("malformed", "hooks must be an object")
+    for event in HOOK_EVENTS:
+        if event not in hooks:
+            continue
+        groups = hooks[event]
+        if not isinstance(groups, list):
+            return HookCheck("malformed", f"hooks.{event} must be an array")
+        for group in groups:
+            if not isinstance(group, dict):
+                return HookCheck("malformed", f"hooks.{event} matcher groups must be objects")
+            if not isinstance(group.get("hooks"), list):
+                return HookCheck("malformed", f"hooks.{event} matcher group hooks must be an array")
+    return None
+
+
 def _has_all_owned(value: dict[str, object]) -> bool:
     hooks = _hooks(value, create=False)
     return isinstance(hooks, dict) and all(_contains_exact(hooks.get(event)) for event in HOOK_EVENTS)
@@ -121,9 +144,10 @@ def check_hooks(project: str | Path) -> HookCheck:
     if issue is not None:
         return issue
     assert value is not None
+    structure_issue = _validate_managed_hooks(value)
+    if structure_issue is not None:
+        return structure_issue
     hooks = _hooks(value, create=False)
-    if "hooks" in value and hooks is None:
-        return HookCheck("malformed", "hooks must be an object")
     if not isinstance(hooks, dict):
         return HookCheck("missing")
     if any(_contains_owned_variant(hooks.get(event)) for event in HOOK_EVENTS):
@@ -135,16 +159,21 @@ def check_hooks(project: str | Path) -> HookCheck:
 
 def install_hooks(project: str | Path) -> HookCheck:
     path = _settings_path(project)
-    if path.is_symlink():
-        raise ValueError("refusing to replace symlink settings.json")
+    _refuse_symlinks(path)
     value, issue = _read(path)
     if issue is not None and issue.status == "malformed":
         return issue
     if value is None:
         return HookCheck("malformed", "settings JSON must be an object")
+    structure_issue = _validate_managed_hooks(value)
+    if structure_issue is not None:
+        return structure_issue
     hooks = _hooks(value, create=True)
     if hooks is None:
         return HookCheck("malformed", "hooks must be an object")
+
+    if any(_contains_owned_variant(hooks.get(event)) for event in HOOK_EVENTS):
+        return HookCheck("modified", "managed Claude Hook handler differs")
 
     changed = False
     for event in HOOK_EVENTS:
@@ -165,30 +194,29 @@ def install_hooks(project: str | Path) -> HookCheck:
 
 def uninstall_hooks(project: str | Path) -> HookCheck:
     path = _settings_path(project)
-    if path.is_symlink():
-        raise ValueError("refusing to replace symlink settings.json")
+    _refuse_symlinks(path)
     value, issue = _read(path)
     if issue is not None:
         return issue
     assert value is not None
+    structure_issue = _validate_managed_hooks(value)
+    if structure_issue is not None:
+        return structure_issue
     hooks = _hooks(value, create=False)
     if not isinstance(hooks, dict):
         return HookCheck("missing")
 
     changed = False
-    for event in list(hooks):
-        groups = hooks.get(event)
-        if not isinstance(groups, list):
+    for event in HOOK_EVENTS:
+        if event not in hooks:
             continue
+        groups = hooks.get(event)
+        assert isinstance(groups, list)
         kept_groups: list[dict[str, object]] = []
         for group in groups:
-            if not isinstance(group, dict):
-                kept_groups.append(group)
-                continue
+            assert isinstance(group, dict)
             handlers = group.get("hooks")
-            if not isinstance(handlers, list):
-                kept_groups.append(group)
-                continue
+            assert isinstance(handlers, list)
             remaining = [handler for handler in handlers if handler != OWNED_HANDLER]
             if len(remaining) != len(handlers):
                 changed = True
