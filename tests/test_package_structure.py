@@ -14,6 +14,26 @@ def test_canonical_task_and_notification_modules_are_importable() -> None:
     assert hasattr(codex_adapter, "CodexEvent")
 
 
+def test_agent_modules_have_explicit_provider_and_shared_owners() -> None:
+    names = {
+        "agent": "lark_bot.modules.agent.agent_service",
+        "task": "lark_bot.modules.task.task_runner",
+        "notification": "lark_bot.modules.notification.notification_service",
+        "lark": "lark_bot.modules.lark.lark_router",
+        "codex": "lark_bot.modules.codex.codex_orchestrator",
+        "claude": "lark_bot.modules.claude.claude_adapter",
+    }
+
+    modules = {key: import_module(value) for key, value in names.items()}
+
+    assert modules["agent"].AgentRegistry
+    assert modules["task"].run_command
+    assert modules["notification"].send_with_dedupe
+    assert modules["lark"].LarkControlRouter
+    assert modules["codex"].CodexOrchestrator
+    assert modules["claude"].ClaudeEvent
+
+
 def test_codex_app_server_is_split_by_wire_and_lifecycle_responsibility() -> None:
     messages = import_module("lark_bot.codex.app_server.messages")
     responses = import_module("lark_bot.codex.app_server.responses")

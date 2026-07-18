@@ -16,11 +16,12 @@ from lark_bot.config import build_config_checks, get_settings, public_settings_s
 from lark_bot.modules.claude.claude_service import build_claude_notification_from_json
 from lark_bot.modules.codex.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
 from lark_bot.modules.codex.codex_tui import CodexTuiLauncher, CodexTuiOptions
-from lark_bot.tasks.detector import detect_output
+from lark_bot.modules.task.task_detector import detect_output
 from lark_bot.server.daemon import build_runtime, create_daemon_app, ensure_daemon_token
 from lark_bot.modules.codex.codex_hook import check_hooks, install_hooks, uninstall_hooks
-from lark_bot.models import DetectionResult, NotificationRequest, TaskResult, TaskStatus
-from lark_bot.tasks.runner import run_command
+from lark_bot.modules.notification.notification_model import NotificationRequest
+from lark_bot.modules.task.task_model import DetectionResult, TaskResult, TaskStatus
+from lark_bot.modules.task.task_runner import run_command
 from lark_bot.commands.codex_args import uses_remote_resume_picker as _uses_remote_resume_picker
 from lark_bot.commands.common import (
     build_codex_notification_from_json,

@@ -85,6 +85,13 @@ lark-bot codex-event --file codex-event.json
 Get-Content codex-event.json | lark-bot codex-event
 ```
 
+Send a Claude Code Hook event through the same notification path:
+
+```bash
+lark-bot claude-event --file claude-event.json
+Get-Content claude-event.json | lark-bot claude-event
+```
+
 Example Codex event payload:
 
 ```json
@@ -228,16 +235,17 @@ The server also exposes `POST /lark/events` for Lark URL verification challenge 
 
 Implementation modules are grouped by functional ownership under `src/lark_bot/`:
 
-- `commands/`: Typer command composition, Codex argument parsing, and shared CLI helpers.
-- `tasks/`: subprocess execution and output-status detection.
-- `notifications/`: notification interfaces and agent event adapters.
-- `lark/`: Lark OpenAPI client, inbound event normalization, reply routing, and long connection.
-- `codex/`: Codex domain models, app-server transport, gateway, TUI integration, hooks, probes, and orchestration.
-- `storage/codex/`: Codex SQLite store, versioned schema, and row mapping.
-- `server/daemon/`: authenticated daemon API, token handling, and runtime exports.
+- `core/`: configuration, logging, and redaction infrastructure.
+- `modules/agent/`: shared Agent/session/event contracts, per-session serialization, and provider registry.
+- `modules/task/`: subprocess execution and output-status detection.
+- `modules/notification/`: notification models, dedupe send service, and storage protocol.
+- `modules/lark/`: Lark OpenAPI client, inbound event normalization, reply routing, rendering, and long connection.
+- `modules/codex/`: Codex models, app-server transport, gateway, TUI, hooks, orchestration, and SQLite persistence.
+- `modules/claude/`: Claude Code Hook/event models, adapter, service, and CLI integration.
+- `server/daemon/`: authenticated daemon API, shared Bot runtime, provider registry composition, and workers.
 - `server/`: public FastAPI event callback endpoints.
 
-The package root contains only executable entry points and genuinely shared contracts: `cli.py`, `config.py`, `models.py`, and `redaction.py`.
+The daemon owns one Lark Bot client and can serve multiple independent Codex or Claude sessions. Each session has a stable `session_id`; interactive Lark replies resolve through `lark_message_id` to the corresponding interaction and session. Notifications display the agent, session name, and a short session ID. The old `lark_bot.codex.*`, `lark_bot.lark.*`, `lark_bot.tasks.*`, and `lark_bot.notifications.*` paths remain compatibility shims for existing integrations.
 
 ## Security Notes
 
