@@ -98,6 +98,20 @@ def test_outbox_requires_canonical_agent_and_scopes_mutators():
         assert not store.record_outbox_failure(outbox_id, error="x", next_attempt_at=now, agent=AgentKind.CODEX)
 
 
+def test_outbox_derives_interaction_provider_and_rejects_conflicts():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", created_at=now, updated_at=now))
+        store.create(AgentSession(session_id="cx", agent=AgentKind.CODEX, name="cx", created_at=now, updated_at=now))
+        store.create_interaction(AgentInteraction(interaction_id="i", session_id="cl", request_id="r", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now))
+        outbox_id = store.enqueue_outbox(notification_type="n", payload_summary="x", interaction_id="i", created_at=now)
+        assert store.get_outbox_item(outbox_id, agent=AgentKind.CLAUDE) is not None
+        with pytest.raises(ValueError):
+            store.enqueue_outbox(notification_type="n", payload_summary="x", interaction_id="i", agent=AgentKind.CODEX)
+        with pytest.raises(ValueError):
+            store.enqueue_outbox(notification_type="n", payload_summary="x", session_id="cx", interaction_id="i", created_at=now)
+
+
 def test_model_and_schema_defaults_are_non_nullable():
     now = datetime.now(timezone.utc)
     session = AgentSession(session_id="s", agent=AgentKind.CODEX, name="n")
@@ -125,6 +139,45 @@ def test_update_session_if_status_explicit_none_clears_summary():
         store.create(AgentSession(session_id="s", agent=AgentKind.CODEX, name="n", status=SessionStatus.RUNNING, summary="present", created_at=now, updated_at=now))
         assert store.update_session_if_status("s", (SessionStatus.RUNNING,), status=SessionStatus.SUCCEEDED, summary=None, agent=AgentKind.CODEX)
         assert store.get_session("s").summary == ""
+
+
+def test_record_audit_rejects_explicit_provider_mismatch_atomically():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cx", agent=AgentKind.CODEX, name="cx", created_at=now, updated_at=now))
+        with pytest.raises(ValueError):
+            store.record_audit(event_type="bad", session_id="cx", agent=AgentKind.CLAUDE)
+        assert store.list_audit() == []
+
+
+def test_record_audit_derives_session_provider_when_agent_omitted():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", created_at=now, updated_at=now))
+        audit_id = store.record_audit(event_type="derived", session_id="cl")
+        assert [item.id for item in store.list_audit(agent=AgentKind.CLAUDE)] == [audit_id]
+        assert store.list_audit(agent=AgentKind.CODEX) == []
+        with store._connection() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM codex_audit").fetchone()[0] == 0
+
+
+def test_record_audit_derives_interaction_provider_and_rejects_mismatch():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        store.create(AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", created_at=now, updated_at=now))
+        store.create(AgentSession(session_id="cx", agent=AgentKind.CODEX, name="cx", created_at=now, updated_at=now))
+        store.create_interaction(AgentInteraction(interaction_id="i", session_id="cl", request_id="r", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now))
+        audit_id = store.record_audit(event_type="derived", interaction_id="i")
+        assert store.list_audit(agent=AgentKind.CLAUDE)[0].id == audit_id
+        with pytest.raises(ValueError):
+            store.record_audit(event_type="bad", session_id="cx", interaction_id="i", agent=AgentKind.CLAUDE)
+
+
+def test_record_audit_sessionless_requires_explicit_agent():
+    with SQLiteAgentStore(":memory:") as store:
+        with pytest.raises(ValueError):
+            store.record_audit(event_type="sessionless")
+        assert store.record_audit(event_type="sessionless", agent=AgentKind.CLAUDE) > 0
 
 
 

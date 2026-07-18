@@ -289,6 +289,7 @@ class SQLiteCodexStore:
 
     def enqueue_outbox(
         self,
+        *,
         notification_type: str,
         payload_summary: str,
         session_id: str | None = None,
@@ -333,6 +334,7 @@ class SQLiteCodexStore:
 
     def record_audit(
         self,
+        *,
         event_type: str,
         detail_summary: str = "",
         session_id: str | None = None,

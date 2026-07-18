@@ -414,8 +414,52 @@ class SQLiteAgentStore:
             c.execute(f"UPDATE agent_sessions SET status=?,updated_at=? WHERE {where}", [SessionStatus.INTERRUPTED.value,stamp,*args]); c.execute(f"UPDATE agent_interactions SET status=?,resolved_at=? WHERE id IN ({','.join('?' for _ in interactions)})", [InteractionStatus.EXPIRED.value,stamp,*interactions]) if interactions else None
         return StartupReconciliationResult(session_ids=sessions,interaction_ids=interactions)
 
-    def record_audit(self, *, event_type: str, detail_summary: str = "", session_id: str | None = None, interaction_id: str | None = None, actor_id: str | None = None, created_at: datetime | None = None, agent: AgentKind | str = AgentKind.CODEX) -> int:
-        with self._connection() as c: cur = c.execute("INSERT INTO agent_audit(agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES (?,?,?,?,?,?,?)", (AgentKind(agent).value,session_id,interaction_id,event_type,actor_id,safe_summary(detail_summary),serialize_datetime(created_at or datetime.now(timezone.utc))))
+    def record_audit(
+        self,
+        *,
+        event_type: str,
+        detail_summary: str = "",
+        session_id: str | None = None,
+        interaction_id: str | None = None,
+        actor_id: str | None = None,
+        created_at: datetime | None = None,
+        agent: AgentKind | str | None = None,
+    ) -> int:
+        with self._connection() as c:
+            c.execute("BEGIN IMMEDIATE")
+            derived: str | None = None
+            if interaction_id is not None:
+                row = c.execute(
+                    "SELECT i.session_id,s.agent FROM agent_interactions i JOIN agent_sessions s ON s.id=i.session_id WHERE i.id=?",
+                    (interaction_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("audit interaction does not exist")
+                if session_id is not None and row["session_id"] != session_id:
+                    raise ValueError("audit session and interaction do not match")
+                derived = row["agent"]
+            elif session_id is not None:
+                row = c.execute("SELECT agent FROM agent_sessions WHERE id=?", (session_id,)).fetchone()
+                if row is None:
+                    raise ValueError("audit session does not exist")
+                derived = row["agent"]
+            if agent is None and derived is None:
+                raise ValueError("sessionless audit requires agent")
+            effective = derived or AgentKind(agent).value
+            if agent is not None and AgentKind(agent).value != effective:
+                raise ValueError("audit agent does not match canonical owner")
+            cur = c.execute(
+                "INSERT INTO agent_audit(agent,session_id,interaction_id,event_type,actor_id,detail_summary,created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    effective,
+                    session_id,
+                    interaction_id,
+                    event_type,
+                    actor_id,
+                    safe_summary(detail_summary),
+                    serialize_datetime(created_at or datetime.now(timezone.utc)),
+                ),
+            )
         return int(cur.lastrowid)
 
     def list_audit(self, *, session_id: str | None = None, agent: AgentKind | str | None = None) -> list[AgentAuditEntry]:

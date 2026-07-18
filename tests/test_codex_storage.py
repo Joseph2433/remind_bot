@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import inspect
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,15 @@ from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 4, 0, tzinfo=timezone.utc)
+
+
+def test_codex_typed_storage_signatures_are_keyword_only():
+    enqueue = inspect.signature(SQLiteCodexStore.enqueue_outbox)
+    audit = inspect.signature(SQLiteCodexStore.record_audit)
+    assert list(enqueue.parameters)[0] == "self"
+    assert list(audit.parameters)[0] == "self"
+    assert enqueue.parameters["notification_type"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert audit.parameters["event_type"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 @pytest.fixture
