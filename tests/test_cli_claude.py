@@ -31,6 +31,21 @@ def test_claude_no_lark_sets_disabled_environment(monkeypatch):
     assert seen[0].env["LARK_BOT_CLAUDE_HOOK_DISABLED"] == "1"
 
 
+def test_claude_no_lark_is_reserved_after_native_args(monkeypatch):
+    seen = []
+    monkeypatch.setattr(commands, "get_settings", lambda: type("S", (), {"claude_path": "claude"})())
+    monkeypatch.setattr(commands.ClaudeTuiLauncher, "run", lambda self, options: seen.append(options) or 0)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["claude", "--resume", "session-1", "--no-lark"],
+    )
+
+    assert result.exit_code == 0
+    assert seen[0].args == ["--resume", "session-1"]
+    assert seen[0].env["LARK_BOT_CLAUDE_HOOK_DISABLED"] == "1"
+
+
 def test_claude_jobs_use_generic_agent_routes(monkeypatch):
     requests = []
 

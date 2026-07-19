@@ -69,6 +69,20 @@ class _CodexFallbackGroup(TyperGroup):
         )
 
 
+def _extract_claude_wrapper_options(
+    args: Sequence[str],
+    *,
+    no_lark: bool,
+) -> tuple[list[str], bool]:
+    native_args: list[str] = []
+    for arg in args:
+        if arg == "--no-lark":
+            no_lark = True
+        else:
+            native_args.append(arg)
+    return native_args, no_lark
+
+
 class _ClaudeFallbackGroup(TyperGroup):
     """Treat unknown Claude subcommands/options as native CLI arguments."""
 
@@ -81,7 +95,11 @@ class _ClaudeFallbackGroup(TyperGroup):
         def forward(sub_ctx: click.Context) -> None:
             parent = sub_ctx.parent
             no_lark = bool(parent and parent.params.get("no_lark"))
-            _run_claude_tui([cmd_name, *sub_ctx.args], no_lark=no_lark)
+            args, no_lark = _extract_claude_wrapper_options(
+                [cmd_name, *sub_ctx.args],
+                no_lark=no_lark,
+            )
+            _run_claude_tui(args, no_lark=no_lark)
 
         return click.Command(
             name=cmd_name,
@@ -441,7 +459,8 @@ def claude_command(
 ) -> None:
     """Launch the native Claude Code TUI when no subcommand is selected."""
     if ctx.invoked_subcommand is None:
-        _run_claude_tui(ctx.args, no_lark=no_lark)
+        args, no_lark = _extract_claude_wrapper_options(ctx.args, no_lark=no_lark)
+        _run_claude_tui(args, no_lark=no_lark)
 
 
 @job_app.command("start")

@@ -164,9 +164,31 @@ def test_generic_claude_crud_status_resume_and_prompt_exclusion(workspace_tmp_pa
         assert response.status_code == 201
         assert "TOP SECRET" not in response.text
         assert claude.created[0]["resume_id"] == "resume-1"
+        assert "sandbox" not in claude.created[0]
         assert client.get("/api/v1/agents/claude/sessions", headers=headers, params={"status": "running"}).status_code == 200
         assert client.get("/api/v1/agents/claude/sessions/claude-1", headers=headers).status_code == 200
         assert client.post("/api/v1/agents/claude/sessions/claude-1/cancel", headers=headers).status_code == 200
+
+
+def test_generic_claude_rejects_unsupported_read_only_sandbox(workspace_tmp_path):
+    runtime, _, _, claude = _runtime(workspace_tmp_path)
+    headers = {"Authorization": "Bearer secret"}
+
+    with TestClient(create_daemon_app(runtime, token="secret")) as client:
+        response = client.post(
+            "/api/v1/agents/claude/sessions",
+            headers=headers,
+            json={
+                "name": "claude job",
+                "cwd": ".",
+                "prompt": "TOP SECRET",
+                "sandbox": "read-only",
+            },
+        )
+
+    assert response.status_code == 422
+    assert "TOP SECRET" not in response.text
+    assert claude.created == []
 
 
 def test_generic_hook_derives_provider_and_drops_sensitive_fields(workspace_tmp_path):

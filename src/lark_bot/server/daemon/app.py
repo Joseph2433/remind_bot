@@ -509,16 +509,25 @@ def create_daemon_app(runtime: DaemonRuntime, *, token: str) -> FastAPI:
 
     @app.post("/api/v1/agents/{agent}/sessions", status_code=201, dependencies=[Depends(authenticate)])
     async def create_agent_session(agent: str, request: AgentSessionCreate):
-        _, adapter = _adapter_for(runtime, agent)
+        provider, adapter = _adapter_for(runtime, agent)
+        if provider is AgentKind.CLAUDE and request.sandbox != "workspace-write":
+            raise HTTPException(
+                status_code=422,
+                detail="Claude managed sessions support workspace-write only",
+            )
+        options = {
+            "model": request.model,
+            "permission_mode": request.permission_mode,
+            "resume_id": request.resume_id,
+        }
+        if provider is AgentKind.CODEX:
+            options["sandbox"] = request.sandbox
         try:
             session = await adapter.create_session(
                 request.name,
                 request.cwd,
                 request.prompt,
-                model=request.model,
-                sandbox=request.sandbox,
-                permission_mode=request.permission_mode,
-                resume_id=request.resume_id,
+                **options,
             )
         except (ProcessExitedError, ServerRpcError, RuntimeError, OSError, ModuleNotFoundError):
             raise HTTPException(status_code=502, detail="agent unavailable") from None
