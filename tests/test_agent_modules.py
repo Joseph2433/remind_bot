@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from importlib import import_module
 
@@ -44,3 +45,40 @@ def test_agent_event_requires_session_identity() -> None:
     )
 
     assert value.session.session_id == "session-1"
+
+
+def test_codex_service_preserves_created_session_configuration() -> None:
+    codex_model = import_module("lark_bot.modules.codex.codex_model")
+    codex_service = import_module("lark_bot.modules.codex.codex_service")
+    now = datetime.now(timezone.utc)
+
+    class Orchestrator:
+        async def create_session(self, name, cwd, prompt, *, model, sandbox):
+            return codex_model.CodexSession(
+                id="session-1",
+                thread_id="thread-1",
+                turn_id="turn-1",
+                name=name,
+                cwd=cwd,
+                model=model,
+                sandbox=sandbox,
+                status=codex_model.SessionStatus.RUNNING,
+                created_at=now,
+                updated_at=now,
+            )
+
+    session = asyncio.run(
+        codex_service.CodexService(Orchestrator()).create_session(
+            "build",
+            "C:/workspace",
+            "private prompt",
+            model="gpt",
+            sandbox="read-only",
+        )
+    )
+
+    assert session.conversation_id == "thread-1"
+    assert session.turn_id == "turn-1"
+    assert session.cwd == "C:/workspace"
+    assert session.model == "gpt"
+    assert session.sandbox == "read-only"
