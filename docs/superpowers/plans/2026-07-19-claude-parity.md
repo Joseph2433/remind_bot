@@ -46,7 +46,7 @@ modules.
 - Modify: `tests/test_claude_adapter.py`
 - Create: `tests/test_claude_hooks.py`
 
-- [ ] **Step 1: Add failing official-payload tests**
+- [x] **Step 1: Add failing official-payload tests**
 
 Add fixtures containing only official Hook fields. The core assertions are:
 
@@ -96,7 +96,7 @@ Also cover `SessionStart`, `Notification` types `permission_prompt`,
 `idle_prompt`, `agent_needs_input`, and `agent_completed`, `PermissionRequest`,
 and `SessionEnd`. Assert unsupported event names fail closed.
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run:
 
@@ -107,7 +107,7 @@ python -m pytest tests/test_claude_adapter.py tests/test_claude_hooks.py -q
 Expected: failures for missing `TaskStatus.COMPLETED`, unsupported official
 events, incorrect `UserPromptSubmit` waiting status, and identical dedupe keys.
 
-- [ ] **Step 3: Implement the real event model and stable event identity**
+- [x] **Step 3: Implement the real event model and stable event identity**
 
 Extend the shared status and notification request without changing old keys:
 
@@ -165,7 +165,7 @@ reason or error or "-")`. Map `PermissionRequest` and action-required
 turn completion, and lifecycle events to completed. Never use prompt,
 `tool_input`, transcript, CWD, assistant output, or error details as output.
 
-- [ ] **Step 4: Run the focused and shared notification tests**
+- [x] **Step 4: Run the focused and shared notification tests**
 
 Run:
 
@@ -175,7 +175,7 @@ python -m pytest tests/test_claude_adapter.py tests/test_claude_hooks.py tests/t
 
 Expected: all pass, including old Codex notification behavior.
 
-- [ ] **Step 5: Commit the event semantics**
+- [x] **Step 5: Commit the event semantics**
 
 ```powershell
 git add src/lark_bot/modules/task src/lark_bot/modules/notification src/lark_bot/modules/claude tests/test_claude_adapter.py tests/test_claude_hooks.py
@@ -193,7 +193,7 @@ git commit -m "功能: 完善事件语义"
 - Create: `tests/test_claude_hook_installer.py`
 - Modify: `tests/test_claude_hooks.py`
 
-- [ ] **Step 1: Add failing installer ownership tests**
+- [x] **Step 1: Add failing installer ownership tests**
 
 Use a settings fixture with unrelated permissions and Hooks. Assert:
 
@@ -225,7 +225,7 @@ def test_uninstall_removes_only_owned_handlers(tmp_path: Path) -> None:
 Also assert malformed JSON is unchanged, symlinks are refused, modified owned
 handlers report `modified`, and an absent file is handled idempotently.
 
-- [ ] **Step 2: Add failing callback privacy and outage tests**
+- [x] **Step 2: Add failing callback privacy and outage tests**
 
 ```python
 def test_safe_hook_payload_drops_sensitive_fields() -> None:
@@ -254,7 +254,7 @@ def test_delivery_failure_spools_only_safe_payload(tmp_path: Path) -> None:
     assert persisted == normalize_callback(stdin=payload)
 ```
 
-- [ ] **Step 3: Verify both new test files fail for missing modules**
+- [x] **Step 3: Verify both new test files fail for missing modules**
 
 Run:
 
@@ -264,7 +264,7 @@ python -m pytest tests/test_claude_hook_installer.py tests/test_claude_hooks.py 
 
 Expected: import failures for installer and callback functions.
 
-- [ ] **Step 4: Implement exact owned settings entries and atomic writes**
+- [x] **Step 4: Implement exact owned settings entries and atomic writes**
 
 Use this handler for each event in `SessionStart`, `Notification`,
 `PermissionRequest`, `Stop`, `StopFailure`, and `SessionEnd`:
@@ -295,7 +295,7 @@ Implement `normalize_callback()` with the safe-field allow-list from the design
 and delegate delivery to `agent_hook.deliver_sanitized_hook`. Return immediately
 when `LARK_BOT_CLAUDE_HOOK_DISABLED=1`.
 
-- [ ] **Step 5: Run Hook tests and prove spool privacy**
+- [x] **Step 5: Run Hook tests and prove spool privacy**
 
 Run:
 
@@ -306,7 +306,7 @@ python -m pytest tests/test_claude_hook_installer.py tests/test_claude_hooks.py 
 Expected: all pass; spool JSON contains no transcript, prompt, tool input, CWD,
 or assistant output.
 
-- [ ] **Step 6: Commit the Hook layer**
+- [x] **Step 6: Commit the Hook layer**
 
 ```powershell
 git add src/lark_bot/modules/claude tests/test_claude_hook_installer.py tests/test_claude_hooks.py
@@ -330,7 +330,7 @@ git commit -m "功能: 增加项目Hook接入"
 - Modify: `tests/test_codex_storage.py`
 - Modify: `tests/test_package_structure.py`
 
-- [ ] **Step 1: Add failing shared schema and model round-trip tests**
+- [x] **Step 1: Add failing shared schema and model round-trip tests**
 
 Define tests for physical `agent_sessions`, `agent_interactions`,
 `agent_event_dedupe`, `agent_notification_outbox`, and `agent_audit` tables;
@@ -377,7 +377,7 @@ Managers and adapters always supply explicit request and expiry timestamps;
 the defaults preserve the existing lightweight public constructor used by
 package contract tests.
 
-- [ ] **Step 2: Verify shared storage tests fail**
+- [x] **Step 2: Verify shared storage tests fail**
 
 Run:
 
@@ -387,7 +387,7 @@ python -m pytest tests/test_agent_storage.py tests/test_agent_modules.py -q
 
 Expected: failures for missing `SQLiteAgentStore` and canonical tables.
 
-- [ ] **Step 3: Implement schema version 4 and canonical tables**
+- [x] **Step 3: Implement schema version 4 and canonical tables**
 
 Move schema coordination to `agent_schema.py`; `codex_schema.py` re-exports the
 same `SCHEMA_VERSION`, `MIGRATIONS`, and `initialize_schema`. Version 4 must:
@@ -418,7 +418,7 @@ IDs and timestamps. For legacy outbox rows with null identity, derive
 partial old databases migrate. Run with foreign keys disabled, commit, re-enable
 them, and verify tests call `PRAGMA foreign_key_check`.
 
-- [ ] **Step 4: Move the tested transaction behavior into `SQLiteAgentStore`**
+- [x] **Step 4: Move the tested transaction behavior into `SQLiteAgentStore`**
 
 Move the current `SQLiteCodexStore` method bodies without changing transaction
 boundaries, substituting the canonical table/model names. The public shared API
@@ -453,7 +453,7 @@ interactive turn, event dedupe, outbox, audit, connection, close, and context
 manager methods with the signatures inventoried in the design review. Filter
 reconciliation by agent so Codex startup cannot interrupt Claude rows.
 
-- [ ] **Step 5: Add red tests for first-winner transactions and migration**
+- [x] **Step 5: Add red tests for first-winner transactions and migration**
 
 Copy the existing concurrent resolver pattern into `test_agent_storage.py` and
 assert exactly one winner. Build a version-3 database with one row of every
@@ -461,7 +461,7 @@ legacy type, open `SQLiteAgentStore`, and assert exact canonical copies. Add a
 partial version-1 fixture missing dedupe/audit tables. Assert raw replies become
 `submitted` and never persist.
 
-- [ ] **Step 6: Implement the Codex compatibility facade and mirror triggers**
+- [x] **Step 6: Implement the Codex compatibility facade and mirror triggers**
 
 `SQLiteCodexStore` owns one `SQLiteAgentStore` and maps between `CodexSession` /
 `PendingInteraction` and shared models. Preserve every old method signature;
@@ -475,7 +475,7 @@ inserts and updates mirror into `codex_sessions`, `codex_interactions`,
 old database inspection and the direct SQL privacy assertions. Claude rows must
 never enter those legacy tables.
 
-- [ ] **Step 7: Run shared and complete Codex persistence regression**
+- [x] **Step 7: Run shared and complete Codex persistence regression**
 
 Run:
 
@@ -486,7 +486,7 @@ python -m pytest tests/test_agent_storage.py tests/test_agent_modules.py tests/t
 Expected: all pass, physical legacy tables remain visible, and canonical rows
 contain both providers safely.
 
-- [ ] **Step 8: Commit shared persistence**
+- [x] **Step 8: Commit shared persistence**
 
 ```powershell
 git add src/lark_bot/modules/agent src/lark_bot/modules/codex tests/test_agent_storage.py tests/test_agent_modules.py tests/test_codex_storage.py tests/test_package_structure.py
@@ -501,13 +501,13 @@ git commit -m "重构: 统一会话持久化"
 - Create: `src/lark_bot/modules/claude/claude_sdk.py`
 - Create: `tests/test_claude_sdk.py`
 
-- [ ] **Step 1: Add failing facade tests without importing the SDK globally**
+- [x] **Step 1: Add failing facade tests without importing the SDK globally**
 
 Assert importing `lark_bot.cli` succeeds when an injected importer raises
 `ModuleNotFoundError`. Inject a fake SDK module and assert option, result, and
 permission translation.
 
-- [ ] **Step 2: Verify the facade tests fail**
+- [x] **Step 2: Verify the facade tests fail**
 
 Run:
 
@@ -517,7 +517,7 @@ python -m pytest tests/test_claude_sdk.py -q
 
 Expected: missing `claude_sdk` module and internal protocol types.
 
-- [ ] **Step 3: Define the internal protocol and normalized messages**
+- [x] **Step 3: Define the internal protocol and normalized messages**
 
 ```python
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -573,7 +573,7 @@ Only `ClaudeAgentSdkBridge.__call__()` imports `ClaudeSDKClient`,
 Convert official callbacks and message classes there. Do not leak third-party
 types into the manager.
 
-- [ ] **Step 4: Add the dependency and pass facade tests**
+- [x] **Step 4: Add the dependency and pass facade tests**
 
 Add `"claude-agent-sdk>=0.1.0,<1"` to project dependencies. Run:
 
@@ -583,7 +583,7 @@ python -m pytest tests/test_claude_sdk.py tests/test_package_structure.py -q
 
 Expected: all pass without credentials or a model request.
 
-- [ ] **Step 5: Commit the SDK boundary**
+- [x] **Step 5: Commit the SDK boundary**
 
 ```powershell
 git add pyproject.toml src/lark_bot/modules/claude/claude_sdk.py tests/test_claude_sdk.py
@@ -600,7 +600,7 @@ git commit -m "功能: 增加托管运行桥接"
 - Modify: `src/lark_bot/modules/agent/agent_service.py`
 - Create: `tests/test_claude_sessions.py`
 
-- [ ] **Step 1: Write failing lifecycle tests with fake clients**
+- [x] **Step 1: Write failing lifecycle tests with fake clients**
 
 The fake records call order and yields normalized result messages. Assert the
 store sees `STARTING` before factory/connect, the prompt appears only in
@@ -611,7 +611,7 @@ Resume is explicit: `start --resume PROVIDER_SESSION_ID` creates a new local
 session ID and stores the provider ID in `conversation_id`; IDs are never
 conflated.
 
-- [ ] **Step 2: Verify lifecycle tests fail**
+- [x] **Step 2: Verify lifecycle tests fail**
 
 Run:
 
@@ -621,7 +621,7 @@ python -m pytest tests/test_claude_sessions.py -q
 
 Expected: import failure for `ClaudeSessionManager`.
 
-- [ ] **Step 3: Implement the manager surface**
+- [x] **Step 3: Implement the manager surface**
 
 ```python
 class ClaudeSessionManagerContract(Protocol):
@@ -658,7 +658,7 @@ Extend `AgentAdapter` with list/get/resolve/question-ID/expiry methods. Make
 `ClaudeService` delegate to the manager and `CodexService` delegate equivalent
 methods to its existing orchestrator/store.
 
-- [ ] **Step 4: Run lifecycle, service, and concurrency tests**
+- [x] **Step 4: Run lifecycle, service, and concurrency tests**
 
 Run:
 
@@ -668,7 +668,7 @@ python -m pytest tests/test_claude_sessions.py tests/test_agent_modules.py tests
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit managed lifecycle**
+- [x] **Step 5: Commit managed lifecycle**
 
 ```powershell
 git add src/lark_bot/modules/agent src/lark_bot/modules/claude src/lark_bot/modules/codex/codex_service.py tests/test_claude_sessions.py tests/test_agent_modules.py
@@ -687,7 +687,7 @@ git commit -m "功能: 增加托管会话生命周期"
 - Modify: `tests/test_lark_control.py`
 - Modify: `tests/test_lark_render.py`
 
-- [ ] **Step 1: Add failing permission, input, race, and fail-closed tests**
+- [x] **Step 1: Add failing permission, input, race, and fail-closed tests**
 
 For a fake SDK `can_use_tool` call, assert `Bash` creates an approval and
 `AskUserQuestion` creates a user-input interaction. Test Lark allow/deny,
@@ -695,7 +695,7 @@ answers injected into ephemeral `updated_input`, timeout deny, shutdown deny,
 first-response-wins, late reply ignored/audited, and no raw command/question or
 answer in SQLite.
 
-- [ ] **Step 2: Verify interaction tests fail**
+- [x] **Step 2: Verify interaction tests fail**
 
 Run:
 
@@ -705,7 +705,7 @@ python -m pytest tests/test_claude_sessions.py tests/test_lark_control.py tests/
 
 Expected: Claude resolver and provider dispatch failures.
 
-- [ ] **Step 3: Add live permission futures to the manager**
+- [x] **Step 3: Add live permission futures to the manager**
 
 Use an in-memory record containing the future and original tool input:
 
@@ -726,7 +726,7 @@ updated_input=input_data)`. For `AskUserQuestion`, copy input in memory and add
 `ClaudePermissionResult(False, message="denied")`. Resolve the store claim
 before completing the future so one responder wins.
 
-- [ ] **Step 4: Dispatch Lark replies by stored session provider**
+- [x] **Step 4: Dispatch Lark replies by stored session provider**
 
 Add `AgentInteractionDispatcher` to look up interaction, session, and adapter:
 
@@ -754,7 +754,7 @@ existing reply/reaction parsing unchanged. Render headings from
 `SessionDisplay.agent`, with provider-neutral Chinese approval/input text and
 existing Codex snapshot compatibility.
 
-- [ ] **Step 5: Run interaction regressions**
+- [x] **Step 5: Run interaction regressions**
 
 Run:
 
@@ -764,7 +764,7 @@ python -m pytest tests/test_claude_sessions.py tests/test_lark_control.py tests/
 
 Expected: all pass, including races and fail-closed behavior.
 
-- [ ] **Step 6: Commit provider-neutral interactions**
+- [x] **Step 6: Commit provider-neutral interactions**
 
 ```powershell
 git add src/lark_bot/modules/agent src/lark_bot/modules/claude src/lark_bot/modules/lark tests/test_claude_sessions.py tests/test_lark_control.py tests/test_lark_render.py
@@ -781,14 +781,14 @@ git commit -m "重构: 统一交互响应路由"
 - Create: `tests/test_agent_api.py`
 - Modify: `tests/test_daemon_core.py`
 
-- [ ] **Step 1: Add failing authenticated dispatch tests**
+- [x] **Step 1: Add failing authenticated dispatch tests**
 
 Cover POST/list/get/cancel for `/api/v1/agents/claude/sessions`, invalid
 providers, status filter, `resume_id`, prompt exclusion, generic Hook ingestion,
 Codex compatibility aliases, independent health degradation, outbox delivery,
 and one shared expiry loop.
 
-- [ ] **Step 2: Verify API tests fail**
+- [x] **Step 2: Verify API tests fail**
 
 Run:
 
@@ -798,7 +798,7 @@ python -m pytest tests/test_agent_api.py tests/test_daemon_core.py -q
 
 Expected: 404 for generic routes and missing provider health.
 
-- [ ] **Step 3: Add generic request models and routes**
+- [x] **Step 3: Add generic request models and routes**
 
 ```python
 class AgentSessionCreate(BaseModel):
@@ -816,7 +816,7 @@ Keep `/api/v1/codex/*` wrappers and interactive routes unchanged for existing
 clients. Generic Hook ingress accepts only the safe callback mapping and derives
 the provider from the path, not an untrusted body field.
 
-- [ ] **Step 4: Generalize runtime workers and health**
+- [x] **Step 4: Generalize runtime workers and health**
 
 The expiry worker iterates registered adapters and isolates exceptions per
 provider. The outbox worker polls the shared store; provider event queues are
@@ -828,7 +828,7 @@ Build one `SQLiteAgentStore`, the Codex compatibility facade, Codex
 orchestrator, Claude manager, registry, dispatcher, Lark router, and Lark client.
 Close each owned resource exactly once.
 
-- [ ] **Step 5: Run API, daemon, storage, and Codex compatibility tests**
+- [x] **Step 5: Run API, daemon, storage, and Codex compatibility tests**
 
 Run:
 
@@ -838,7 +838,7 @@ python -m pytest tests/test_agent_api.py tests/test_daemon_core.py tests/test_ag
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit daemon dispatch**
+- [x] **Step 6: Commit daemon dispatch**
 
 ```powershell
 git add src/lark_bot/server/daemon tests/test_agent_api.py tests/test_daemon_core.py
@@ -857,7 +857,7 @@ git commit -m "功能: 增加多模型服务接口"
 - Modify: `tests/test_claude_hooks.py`
 - Modify: `tests/test_cli_codex.py`
 
-- [ ] **Step 1: Add failing CLI parity tests**
+- [x] **Step 1: Add failing CLI parity tests**
 
 Assert native arguments including `--resume`, `--continue`, `--model`, and
 permission mode pass through; `--no-lark` avoids daemon and sets
@@ -866,7 +866,7 @@ permission mode pass through; `--no-lark` avoids daemon and sets
 callback reads bounded stdin, uses a 0.25-second HTTP timeout, spools safely, and
 always exits zero.
 
-- [ ] **Step 2: Verify CLI tests fail**
+- [x] **Step 2: Verify CLI tests fail**
 
 Run:
 
@@ -876,7 +876,7 @@ python -m pytest tests/test_cli_claude.py tests/test_cli_codex.py -q
 
 Expected: missing Claude Typer group and callback command.
 
-- [ ] **Step 3: Implement native launcher and Typer namespaces**
+- [x] **Step 3: Implement native launcher and Typer namespaces**
 
 ```python
 @dataclass(frozen=True)
@@ -905,7 +905,7 @@ Generalize daemon HTTP helper to accept `agent`; retain `_daemon_request()` as a
 Codex compatibility wrapper. `claude-hook` calls the safe adapter and generic
 Hook endpoint, swallows callback failures, and never chains arbitrary commands.
 
-- [ ] **Step 4: Run CLI and Hook regressions**
+- [x] **Step 4: Run CLI and Hook regressions**
 
 Run:
 
@@ -915,7 +915,7 @@ python -m pytest tests/test_cli_claude.py tests/test_claude_hooks.py tests/test_
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit CLI parity**
+- [x] **Step 5: Commit CLI parity**
 
 ```powershell
 git add src/lark_bot/commands src/lark_bot/cli.py src/lark_bot/modules/claude tests/test_cli_claude.py tests/test_claude_hooks.py tests/test_cli_codex.py
@@ -933,13 +933,13 @@ git commit -m "功能: 增加第二终端入口"
 - Modify: `tests/test_package_structure.py`
 - Modify: `docs/superpowers/plans/2026-07-19-claude-parity.md`
 
-- [ ] **Step 1: Add failing safe configuration checks**
+- [x] **Step 1: Add failing safe configuration checks**
 
 Add `claude_path: str = "claude"` and checks for executable discovery and SDK
 package availability. Tests monkeypatch discovery/import metadata and assert no
 path, token, credential, or exception detail leaks through `config --json`.
 
-- [ ] **Step 2: Verify config tests fail**
+- [x] **Step 2: Verify config tests fail**
 
 Run:
 
@@ -949,7 +949,7 @@ python -m pytest tests/test_config.py tests/test_package_structure.py -q
 
 Expected: missing Claude path/SDK checks and new package exports.
 
-- [ ] **Step 3: Implement diagnostics and usage documentation**
+- [x] **Step 3: Implement diagnostics and usage documentation**
 
 Document:
 
@@ -968,7 +968,7 @@ explicit install/uninstall, fail-closed approval timeouts, no-cost automated
 tests, and the no-model-call version smoke check. Correct the current README
 claim that Claude managed sessions already exist before this branch.
 
-- [ ] **Step 4: Run the full verification matrix**
+- [x] **Step 4: Run the full verification matrix**
 
 Run:
 
@@ -982,14 +982,14 @@ claude --version
 Expected: all tests pass; `git diff --check` passes; provider-import search has
 no results; version reports the installed Claude Code without a model request.
 
-- [ ] **Step 5: Run requirement-by-requirement completion audit**
+- [x] **Step 5: Run requirement-by-requirement completion audit**
 
 Record evidence in the implementation plan checkboxes for every parity-matrix
 row: native launch, Hook notify, installer, structured event CLI, managed CRUD,
 resume, approval/input, shared persistence/outbox, Lark routing, and health.
 Treat missing or indirect evidence as incomplete and fix it before closing.
 
-- [ ] **Step 6: Commit final docs and diagnostics**
+- [x] **Step 6: Commit final docs and diagnostics**
 
 ```powershell
 git add src/lark_bot/core/config.py .env.example README.md tests/test_config.py tests/test_package_structure.py docs/superpowers/plans/2026-07-19-claude-parity.md
@@ -1009,3 +1009,31 @@ After all tasks are green:
    `claude --version`;
 6. preserve the branch and worktree; do not push, open, or merge a PR without
    explicit permission.
+
+## Completion Evidence
+
+- Native launch and wrapper isolation: `tests/test_cli_claude.py` covers native
+  argument passthrough and `--no-lark` before or after provider arguments.
+- Hook notification and installer: `tests/test_claude_hooks.py` and
+  `tests/test_claude_hook_installer.py` cover bounded safe payloads, async
+  delivery, sanitized spool fallback, ownership, atomicity, and uninstall.
+- Managed CRUD and resume: `tests/test_agent_api.py`, `tests/test_cli_claude.py`,
+  and `tests/test_claude_sessions.py` cover authenticated create/list/show/
+  cancel, provider resume IDs, and prompt exclusion from API responses.
+- Approval and user input: `tests/test_claude_sessions.py`,
+  `tests/test_lark_control.py`, and `tests/test_session_concurrency.py` cover
+  allow/deny, ephemeral answers, timeout/shutdown denial, and first-winner
+  resolution.
+- Shared persistence and outbox: `tests/test_agent_storage.py` covers canonical
+  Agent tables, legacy Codex migration, provider isolation, dedupe, audit, and
+  privacy-preserving outbox rows.
+- Provider-neutral Lark routing: `tests/test_lark_control.py` and
+  `tests/test_lark_render.py` cover stored-session dispatch and provider-aware
+  actionable messages.
+- Runtime and health isolation: `tests/test_agent_api.py` and
+  `tests/test_daemon_core.py` cover provider routes, strict Hook ingress,
+  shared worker behavior, resource ownership, and independent degradation.
+- Final verification: full `python -m pytest -q` passed with one environment
+  skip; `git diff --check` passed; provider-boundary search returned zero
+  imports; `claude --version` returned `2.1.214 (Claude Code)` without a model
+  request; `git ls-files --eol` reported zero `w/crlf` or `w/mixed` files.
