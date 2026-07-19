@@ -21,7 +21,11 @@ from lark_bot.modules.agent.agent_model import (
 )
 from lark_bot.modules.agent.agent_store import AgentStoreContract, SQLiteAgentStore
 from lark_bot.modules.agent.agent_protocol import AgentAdapter
-from lark_bot.modules.agent.agent_service import AgentRegistry, AgentSessionService
+from lark_bot.modules.agent.agent_service import (
+    AgentInteractionDispatcher,
+    AgentRegistry,
+    AgentSessionService,
+)
 
 __all__ = [
     "AgentAdapter",
@@ -30,6 +34,7 @@ __all__ = [
     "AgentAuditEntry",
     "AgentKind",
     "AgentRegistry",
+    "AgentInteractionDispatcher",
     "AgentSession",
     "AgentSessionService",
     "AgentNotification",

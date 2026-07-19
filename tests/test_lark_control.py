@@ -13,6 +13,8 @@ from lark_bot.modules.lark.lark_event import (
     normalize_reaction_event,
 )
 from lark_bot.modules.lark.lark_router import LarkControlRouter
+from lark_bot.modules.agent.agent_service import AgentInteractionDispatcher, AgentRegistry
+from lark_bot.modules.agent.agent_model import AgentKind
 
 
 def run(coro):
@@ -158,3 +160,60 @@ def test_long_connection_pumps_child_events_and_closes_idempotently():
         assert connection._process.terminated
 
     run(scenario())
+
+
+def test_dispatcher_selects_adapter_from_canonical_session_owner():
+    class Adapter:
+        def __init__(self, agent):
+            self.agent = agent
+            self.calls = []
+
+        async def resolve_interaction(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return True
+
+        def get_user_input_question_ids(self, interaction_id):
+            return ("q-1",)
+
+    class DispatcherStore:
+        def get_interaction(self, interaction_id):
+            return NS(interaction_id=interaction_id, session_id="claude-session")
+
+        def get_session(self, session_id):
+            return NS(session_id=session_id, agent=AgentKind.CLAUDE)
+
+    codex, claude = Adapter(AgentKind.CODEX), Adapter(AgentKind.CLAUDE)
+    registry = AgentRegistry()
+    registry.register(codex)
+    registry.register(claude)
+    dispatcher = AgentInteractionDispatcher(DispatcherStore(), registry)
+    assert run(dispatcher.resolve_interaction("i1", "u1", allow=True))
+    assert not codex.calls
+    assert claude.calls == [(('i1', 'u1'), {'allow': True})]
+    assert dispatcher.get_user_input_question_ids("i1") == ("q-1",)
+
+
+def test_dispatcher_missing_interaction_or_session_fails_closed():
+    class EmptyStore:
+        def get_interaction(self, interaction_id):
+            return None
+
+        def get_session(self, session_id):
+            return None
+
+    dispatcher = AgentInteractionDispatcher(EmptyStore(), AgentRegistry())
+    assert not run(dispatcher.resolve_interaction("missing", "u1", allow=True))
+    assert dispatcher.get_user_input_question_ids("missing") == ()
+
+
+def test_router_routes_claude_approval_through_dispatcher():
+    interaction = NS(interaction_id="claude-i", id="claude-i", kind=InteractionKind.PERMISSION_REQUEST)
+    store = Store(interaction)
+    dispatcher = Orchestrator()
+    router = LarkControlRouter(store, dispatcher=dispatcher)
+    event = LarkMessageEvent("claude-event", "reply", "prompt", None, "chat", "p2p", "u", "yes", False)
+
+    result = run(router.route(event))
+
+    assert result.handled
+    assert dispatcher.calls == [(('claude-i', 'u'), {'allow': True})]

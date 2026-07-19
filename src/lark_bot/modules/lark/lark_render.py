@@ -59,9 +59,9 @@ def render_outbox_notification(
     interaction: Any | None = None,
     session: SessionDisplay | None = None,
 ) -> RenderedMessage:
-    heading, instruction = _outbox_heading_and_instruction(item, interaction)
     summary = redact_text(str(item.payload_summary))
     display = session or _session_display_from_item(item)
+    heading, instruction = _outbox_heading_and_instruction(item, interaction, display)
     label = display.label if display is not None else None
     plain = _outbox_plain_text(heading, summary, instruction, label)
     plain = _escape_lark_at_tags(plain)
@@ -123,7 +123,9 @@ def _task_markdown(request: NotificationRequest, *, tail_lines: int) -> str:
 
 
 def _outbox_heading_and_instruction(
-    item: Any, interaction: Any | None
+    item: Any,
+    interaction: Any | None,
+    session: SessionDisplay | None = None,
 ) -> tuple[str, str | None]:
     notification_type = str(item.notification_type)
     heading = _OUTBOX_HEADINGS.get(
@@ -132,11 +134,12 @@ def _outbox_heading_and_instruction(
     )
     instruction: str | None = None
     if notification_type.endswith("interaction_requested"):
+        provider = session.agent.value.title() if session is not None else "Codex"
         if _interaction_kind_is(interaction, InteractionKind.USER_INPUT):
-            heading = "Codex 请求输入"
+            heading = f"{provider} 请求输入"
             instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
         else:
-            heading = "Codex 请求审批"
+            heading = f"{provider} 请求审批"
             instruction = (
                 "请长按本消息并选择“回复”：输入 yes 或 y 表示允许，"
                 "输入 no 或 n 表示拒绝。也可使用 👍 / 👎。"

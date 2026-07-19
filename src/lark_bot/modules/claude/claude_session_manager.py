@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -25,6 +26,7 @@ from lark_bot.modules.claude.claude_sdk import (
     ClaudeSdkMessage,
     ClaudeSdkOptions,
     ClaudeSdkResult,
+    JsonValue,
 )
 
 
@@ -41,8 +43,10 @@ def _summary(value: object, limit: int = 240) -> str:
 @dataclass
 class _LiveInteraction:
     interaction: AgentInteraction
+    tool_name: str
+    input_data: Mapping[str, JsonValue]
+    question_ids: tuple[str, ...]
     future: asyncio.Future[ClaudePermissionResult]
-    question_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -108,15 +112,19 @@ class ClaudeSessionManager:
                 return
             self._closing = True
             live = list(self._live.items())
+            for _, entry in live:
+                for interaction in list(entry.interactions.values()):
+                    self._finish_live_interaction(
+                        interaction,
+                        ClaudePermissionResult(False, message="denied"),
+                        decision="denied",
+                        actor_id="shutdown",
+                        status=InteractionStatus.CANCELLED,
+                    )
             for session in self._store.list_sessions(agent=self.agent):
                 if session.status in _ACTIVE_STATUSES:
                     self._claim_terminal(session.session_id, SessionStatus.INTERRUPTED, "manager closed")
             for _, entry in live:
-                for interaction in entry.interactions.values():
-                    if not interaction.future.done():
-                        interaction.future.set_result(
-                            ClaudePermissionResult(False, message="session closed")
-                        )
                 try:
                     await entry.client.interrupt()
                 except BaseException:
@@ -357,20 +365,26 @@ class ClaudeSessionManager:
     ) -> bool:
         live = next((entry for entry in self._live.values() if interaction_id in entry.interactions), None)
         if live is None:
+            self._audit_late_response(interaction_id, actor_id)
             return False
         item = live.interactions[interaction_id]
         kind = item.interaction.kind
         if kind is InteractionKind.USER_INPUT:
-            if answers is None or any(key not in item.question_ids for key in answers):
+            if answers is None or set(answers) != set(item.question_ids):
                 return False
             decision = "submitted"
-            updated = {"questions": [{"question": key, "answer": str(value)} for key, value in answers.items()]}
+            updated = copy.deepcopy(dict(item.input_data))
+            updated["answers"] = {str(key): str(value) for key, value in answers.items()}
             result = ClaudePermissionResult(True, updated_input=updated)
         else:
             if allow is None:
                 return False
             decision = "granted" if allow else "denied"
-            result = ClaudePermissionResult(bool(allow), message=None if allow else "Permission denied")
+            result = ClaudePermissionResult(
+                bool(allow),
+                updated_input=copy.deepcopy(dict(item.input_data)) if allow else None,
+                message=None if allow else "denied",
+            )
         won = self._store.resolve_interaction_and_refresh_session(
             interaction_id,
             decision=decision,
@@ -379,8 +393,58 @@ class ClaudeSessionManager:
             agent=self.agent,
         )
         if not won:
+            self._audit_late_response(interaction_id, actor_id)
             return False
         live.interactions.pop(interaction_id, None)
+        if not item.future.done():
+            item.future.set_result(result)
+        return True
+
+    def _audit_late_response(self, interaction_id: str, actor_id: str) -> None:
+        interaction = self._store.get_interaction(interaction_id)
+        if interaction is None:
+            return
+        try:
+            self._store.record_audit(
+                event_type="interaction_late_response",
+                interaction_id=interaction_id,
+                session_id=interaction.session_id,
+                actor_id=actor_id,
+                detail_summary="late interaction response ignored",
+                agent=self.agent,
+                created_at=_utc(self._clock()),
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    def _finish_live_interaction(
+        self,
+        item: _LiveInteraction,
+        result: ClaudePermissionResult,
+        *,
+        decision: str,
+        actor_id: str,
+        status: InteractionStatus = InteractionStatus.RESOLVED,
+    ) -> bool:
+        if status is InteractionStatus.CANCELLED:
+            won = self._store.cancel_interaction_and_refresh_session(
+                item.interaction.interaction_id,
+                updated_at=_utc(self._clock()),
+                agent=self.agent,
+            )
+        else:
+            won = self._store.resolve_interaction_and_refresh_session(
+                item.interaction.interaction_id,
+                decision=decision,
+                actor_id=actor_id,
+                updated_at=_utc(self._clock()),
+                status=status,
+                agent=self.agent,
+            )
+        if not won:
+            return False
+        for entry in self._live.values():
+            entry.interactions.pop(item.interaction.interaction_id, None)
         if not item.future.done():
             item.future.set_result(result)
         return True
@@ -450,7 +514,13 @@ class ClaudeSessionManager:
                     agent=self.agent,
                 )
                 return ClaudePermissionResult(False, message="session is not live")
-            entry.interactions[interaction_id] = _LiveInteraction(interaction, future, question_ids)
+            entry.interactions[interaction_id] = _LiveInteraction(
+                interaction,
+                tool_name,
+                _safe_json_mapping(input_data),
+                question_ids,
+                future,
+            )
             try:
                 self._outbox.enqueue_outbox(
                     notification_type="user_input" if is_question else "permission_request",
@@ -461,14 +531,12 @@ class ClaudeSessionManager:
                     created_at=now,
                 )
             except Exception:
-                self._store.resolve_interaction_and_refresh_session(
-                    interaction_id,
+                self._finish_live_interaction(
+                    entry.interactions[interaction_id],
+                    ClaudePermissionResult(False, message="denied"),
                     decision="submitted" if is_question else "denied",
                     actor_id="system",
-                    updated_at=_utc(self._clock()),
-                    agent=self.agent,
                 )
-                future.set_result(ClaudePermissionResult(False, message="delivery failure"))
             try:
                 return await asyncio.wait_for(asyncio.shield(future), self._interaction_timeout)
             except asyncio.TimeoutError:
@@ -480,12 +548,28 @@ class ClaudeSessionManager:
                     status=InteractionStatus.EXPIRED,
                     agent=self.agent,
                 )
-                entry.interactions.pop(interaction_id, None)
+                pending = entry.interactions.pop(interaction_id, None)
+                if pending is not None and not pending.future.done():
+                    pending.future.set_result(ClaudePermissionResult(False, message="denied"))
                 return ClaudePermissionResult(False, message="interaction expired")
             finally:
                 entry.interactions.pop(interaction_id, None)
 
         return callback
+
+
+def _json_value(value: Any) -> JsonValue:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return str(value)
+
+
+def _safe_json_mapping(value: Mapping[str, Any]) -> Mapping[str, JsonValue]:
+    return copy.deepcopy({str(key): _json_value(item) for key, item in value.items()})
 
 
 _ACTIVE_STATUSES = (

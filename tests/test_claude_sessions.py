@@ -119,9 +119,115 @@ def test_permission_payload_is_bounded_and_answers_stay_in_memory():
                 break
             await asyncio.sleep(0)
         assert client.permission_result.allowed is True
-        assert client.permission_result.updated_input == {"questions": [{"question": "q-1", "answer": "yes"}]}
+        assert client.permission_result.updated_input == {
+            "questions": [{"question": "q-1", "options": []}],
+            "description": "unmasked-tool-input-should-never-persist",
+            "secret": "do-not-store",
+            "answers": {"q-1": "yes"},
+        }
         await manager.wait_session(session.session_id)
         await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_bash_allow_returns_a_private_copy_of_original_input_and_deny_has_no_input():
+    async def scenario():
+        events = []
+        store = SQLiteAgentStore(":memory:")
+        callback_holder = {}
+
+        class Client(FakeClient):
+            async def query(self, prompt):
+                callback_holder["result"] = await callback_holder["callback"](
+                    "Bash", {"command": "printf secret", "nested": {"value": 1}}, None
+                )
+
+        def factory(options):
+            callback_holder["callback"] = options.can_use_tool
+            return Client(events)
+
+        manager = ClaudeSessionManager(store, factory, interaction_timeout_seconds=5)
+        session = await manager.create_session("bash", ".", "prompt")
+        for _ in range(20):
+            if manager._live[session.session_id].interactions:
+                break
+            await asyncio.sleep(0)
+        interaction_id = next(iter(manager._live[session.session_id].interactions))
+        assert await manager.resolve_interaction(interaction_id, "tester", allow=True)
+        await manager.wait_session(session.session_id)
+        allowed = callback_holder["result"]
+        assert allowed.allowed is True
+        assert allowed.updated_input == {"command": "printf secret", "nested": {"value": 1}}
+        assert allowed.updated_input is not callback_holder["callback"]
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_late_response_is_audited_without_raw_answer():
+    async def scenario():
+        store = SQLiteAgentStore(":memory:")
+        callback_holder = {}
+
+        class Client(FakeClient):
+            async def query(self, prompt):
+                callback_holder["result"] = await callback_holder["callback"](
+                    "Bash", {"command": "secret-command"}, None
+                )
+
+        def factory(options):
+            callback_holder["callback"] = options.can_use_tool
+            return Client([])
+
+        manager = ClaudeSessionManager(store, factory, interaction_timeout_seconds=5)
+        session = await manager.create_session("late", ".", "prompt")
+        for _ in range(20):
+            if manager._live[session.session_id].interactions:
+                break
+            await asyncio.sleep(0)
+        interaction_id = next(iter(manager._live[session.session_id].interactions))
+        assert await manager.resolve_interaction(interaction_id, "first", allow=True)
+        assert not await manager.resolve_interaction(interaction_id, "late", allow=False)
+        audit = store.list_audit(session_id=session.session_id)
+        assert audit and audit[-1].event_type == "interaction_late_response"
+        assert "secret-command" not in audit[-1].detail_summary
+        await manager.wait_session(session.session_id)
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_close_denies_pending_permission_and_marks_it_cancelled():
+    async def scenario():
+        store = SQLiteAgentStore(":memory:")
+        callback_holder = {}
+
+        class Client(FakeClient):
+            def __init__(self, events, callback):
+                super().__init__(events)
+                self.callback = callback
+                self.requested = asyncio.Event()
+                self.permission_result = None
+
+            async def query(self, prompt):
+                self.requested.set()
+                self.permission_result = await self.callback("Bash", {"command": "secret"}, None)
+
+        def factory(options):
+            callback_holder["client"] = Client([], options.can_use_tool)
+            return callback_holder["client"]
+
+        manager = ClaudeSessionManager(store, factory, close_timeout_seconds=1)
+        session = await manager.create_session("close", ".", "prompt")
+        client = callback_holder["client"]
+        await asyncio.wait_for(client.requested.wait(), 1)
+        interaction_id = next(iter(manager._live[session.session_id].interactions))
+        await manager.close()
+        interaction = store.get_interaction(interaction_id, agent=AgentKind.CLAUDE)
+        assert interaction.status.value == "cancelled"
+        assert client.permission_result is not None
+        assert client.permission_result.allowed is False
 
     asyncio.run(scenario())
 

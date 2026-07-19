@@ -155,6 +155,29 @@ def test_outbox_approval_card_includes_instructions():
     assert "no 或 n" in body
 
 
+def test_outbox_claude_approval_uses_provider_heading_and_generic_instructions():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "orchestrator:interaction_requested",
+            "payload_summary": "run ls",
+            "interaction_id": "i1",
+        },
+    )()
+    interaction = type("Interaction", (), {"kind": InteractionKind.PERMISSION_REQUEST})()
+    display = SessionDisplay(
+        agent=AgentKind.CLAUDE,
+        session_id="claude-session",
+        session_name="docs",
+    )
+
+    rendered = render_outbox_notification(item, interaction=interaction, session=display)
+
+    assert rendered.content["header"]["title"]["content"] == "Claude 请求审批"
+    assert rendered.content["header"]["template"] == "orange"
+
+
 def test_outbox_card_preserves_markdown_without_outer_code_fence():
     summary = (
         "# 结论\n\n"
