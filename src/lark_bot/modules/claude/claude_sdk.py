@@ -55,7 +55,7 @@ class ClaudeSdkResult:
     is_error: bool
     duration_ms: int | None
     result: JsonValue | None
-    errors: tuple[str, ...]
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,10 @@ def _safe_mapping(value: Any) -> Mapping[str, JsonValue]:
     if isinstance(attributes, Mapping):
         return {str(key): _json_value(item) for key, item in attributes.items() if not str(key).startswith("_")}
     return {}
+
+
+def _safe_context(value: Any) -> ClaudeToolContext:
+    return None if value is None else _safe_mapping(value)
 
 
 def _safe_errors(value: Any) -> tuple[str, ...]:
@@ -247,7 +251,7 @@ class ClaudeAgentSdkBridge:
             return None
 
         async def wrapped(tool_name: str, input_data: Any, context: Any) -> Any:
-            result = await callback(tool_name, _safe_mapping(input_data), _safe_mapping(context))
+            result = await callback(tool_name, _safe_mapping(input_data), _safe_context(context))
             if result.allowed:
                 updated_input = None
                 if result.updated_input is not None:

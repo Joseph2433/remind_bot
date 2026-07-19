@@ -241,6 +241,61 @@ def test_permission_callback_translates_denial_message() -> None:
     asyncio.run(exercise())
 
 
+def test_result_errors_default_and_none_context_are_normalized() -> None:
+    from lark_bot.modules.claude.claude_sdk import (
+        ClaudeAgentSdkBridge,
+        ClaudePermissionResult,
+        ClaudeSdkOptions,
+        ClaudeSdkResult,
+    )
+
+    assert ClaudeSdkResult(
+        session_id="s",
+        subtype="success",
+        is_error=False,
+        duration_ms=0,
+        result=None,
+    ).errors == ()
+
+    class Allow:
+        def __init__(self, *, updated_input=None) -> None:
+            self.updated_input = updated_input
+
+    class Deny:
+        def __init__(self, *, message: str) -> None:
+            self.message = message
+
+    class Options:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class Client:
+        def __init__(self, *, options: Options) -> None:
+            self.options = options
+
+    sdk = ModuleType("claude_agent_sdk")
+    sdk.ClaudeSDKClient = Client
+    sdk.ClaudeAgentOptions = Options
+    sdk.PermissionResultAllow = Allow
+    sdk.PermissionResultDeny = Deny
+    seen: list[object] = []
+
+    async def callback(tool_name, input_data, context):
+        seen.append(context)
+        return ClaudePermissionResult(allowed=True)
+
+    client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(
+        ClaudeSdkOptions(can_use_tool=callback)
+    )
+    wrapper = client._sdk_client.options.kwargs["can_use_tool"]
+
+    async def exercise() -> None:
+        await wrapper("Bash", {}, None)
+
+    asyncio.run(exercise())
+    assert seen == [None]
+
+
 def test_missing_sdk_raises_only_when_bridge_is_constructed() -> None:
     from lark_bot.modules.claude.claude_sdk import ClaudeAgentSdkBridge, ClaudeSdkOptions
 
