@@ -445,6 +445,65 @@ def test_codex_generic_waiting_status_is_rejected():
     assert session.status is SessionStatus.WAITING
 
 
+def test_old_v4_nullable_interaction_agent_preserves_referencing_foreign_keys():
+    from pathlib import Path
+
+    path = Path("tests") / f".agent-v4-fk-{uuid4().hex}.db"
+    stamp = "2026-01-01T00:00:00+00:00"
+    try:
+        connection = sqlite3.connect(path)
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(agent_schema.LEGACY_TABLE_STATEMENTS[0])
+        connection.execute(agent_schema.LEGACY_TABLE_STATEMENTS[1])
+        connection.execute(agent_schema.CANONICAL_TABLE_STATEMENTS[0])
+        connection.execute("""CREATE TABLE agent_interactions (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+            request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
+            resolved_at TEXT, expires_at TEXT NOT NULL, actor_id TEXT, decision TEXT
+        )""")
+        connection.execute("""CREATE TABLE agent_notification_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES agent_sessions(id),
+            agent TEXT NOT NULL, session_name TEXT, interaction_id TEXT REFERENCES agent_interactions(id),
+            notification_type TEXT NOT NULL, payload_summary TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+            sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL
+        )""")
+        connection.execute("""CREATE TABLE agent_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, session_id TEXT REFERENCES agent_sessions(id),
+            interaction_id TEXT REFERENCES agent_interactions(id), event_type TEXT NOT NULL,
+            actor_id TEXT, detail_summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+        )""")
+        connection.execute("INSERT INTO agent_sessions(id,agent,name,status,summary,created_at,updated_at) VALUES ('s','codex','s','running','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO codex_sessions(id,name,cwd,sandbox,status,summary,created_at,updated_at) VALUES ('s','s','','workspace-write','running','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO agent_interactions(id,session_id,request_id,kind,status,payload_summary,requested_at,expires_at) VALUES ('i','s','r','exec_approval','pending','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO codex_interactions(id,session_id,request_id,kind,status,payload_summary,requested_at,expires_at) VALUES ('i','s','r','exec_approval','pending','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO agent_notification_outbox(session_id,agent,interaction_id,notification_type,payload_summary,next_attempt_at,created_at) VALUES ('s','codex','i','n','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO agent_audit(agent,session_id,interaction_id,event_type,created_at) VALUES ('codex','s','i','old',?)", (stamp,))
+        connection.execute("PRAGMA user_version=4"); connection.commit(); connection.close()
+
+        for _ in range(2):
+            connection = sqlite3.connect(path)
+            agent_schema.initialize_schema(connection)
+            connection.close()
+        connection = sqlite3.connect(path)
+        assert connection.execute("SELECT agent FROM agent_interactions WHERE id='i'").fetchone()[0] == "codex"
+        for table in ("agent_notification_outbox", "agent_audit"):
+            foreign_keys = connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+            assert any(row[2] == "agent_interactions" for row in foreign_keys)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("INSERT INTO agent_notification_outbox(session_id,agent,interaction_id,notification_type,payload_summary,next_attempt_at,created_at) VALUES ('s','codex','i','new','',?,?)", (stamp, stamp))
+        connection.execute("INSERT INTO agent_audit(agent,session_id,interaction_id,event_type,created_at) VALUES ('codex','s','i','new',?)", (stamp,))
+        connection.commit(); connection.close()
+    finally:
+        try:
+            connection.close()
+        except (NameError, sqlite3.ProgrammingError):
+            pass
+        path.unlink(missing_ok=True)
+
+
 def test_initialize_schema_migration_race_is_single_copy():
     from pathlib import Path
     for _ in range(5):

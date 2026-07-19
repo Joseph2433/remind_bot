@@ -111,6 +111,16 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
     AFTER DELETE ON agent_sessions WHEN OLD.agent='codex' BEGIN
       DELETE FROM codex_sessions WHERE id=OLD.id;
     END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_agent_guard_insert
+    BEFORE INSERT ON agent_interactions
+    WHEN NEW.agent IS NULL OR NOT EXISTS (SELECT 1 FROM agent_sessions WHERE id=NEW.session_id AND agent=NEW.agent) BEGIN
+      SELECT RAISE(ABORT, 'interaction agent does not match session');
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_agent_guard_update
+    BEFORE UPDATE OF agent,session_id ON agent_interactions
+    WHEN NEW.agent IS NULL OR NOT EXISTS (SELECT 1 FROM agent_sessions WHERE id=NEW.session_id AND agent=NEW.agent) BEGIN
+      SELECT RAISE(ABORT, 'interaction agent does not match session');
+    END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_insert
     AFTER INSERT ON agent_interactions WHEN NEW.agent='codex' BEGIN
       INSERT OR IGNORE INTO codex_interactions(id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
@@ -205,15 +215,7 @@ def _canonical_schema(connection: sqlite3.Connection) -> None:
     columns = {row[1]: row for row in connection.execute("PRAGMA table_info(agent_interactions)")}
     if "agent" not in columns:
         connection.execute("ALTER TABLE agent_interactions ADD COLUMN agent TEXT")
-        connection.execute("UPDATE agent_interactions SET agent=(SELECT agent FROM agent_sessions WHERE id=agent_interactions.session_id) WHERE agent IS NULL")
-    elif not columns["agent"][3]:
-        connection.execute("ALTER TABLE agent_interactions RENAME TO agent_interactions_old")
-        connection.execute(CANONICAL_TABLE_STATEMENTS[1])
-        connection.execute("""INSERT INTO agent_interactions
-            (id,session_id,agent,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-            SELECT id,session_id,COALESCE(agent,(SELECT agent FROM agent_sessions WHERE id=agent_interactions_old.session_id)),request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision
-            FROM agent_interactions_old""")
-        connection.execute("DROP TABLE agent_interactions_old")
+    connection.execute("UPDATE agent_interactions SET agent=(SELECT agent FROM agent_sessions WHERE id=agent_interactions.session_id) WHERE agent IS NULL")
     connection.execute("DROP INDEX IF EXISTS idx_agent_interactions_pending_request")
     _execute_statements(connection, CANONICAL_INDEX_STATEMENTS)
 
@@ -226,6 +228,8 @@ def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
         "trg_agent_session_codex_agent_change",
         "trg_agent_session_agent_immutable",
         "trg_agent_session_codex_delete",
+        "trg_agent_interaction_agent_guard_insert",
+        "trg_agent_interaction_agent_guard_update",
         "trg_agent_interaction_codex_insert",
         "trg_agent_interaction_codex_update",
         "trg_agent_interaction_codex_agent_change",
