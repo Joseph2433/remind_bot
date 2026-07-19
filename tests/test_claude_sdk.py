@@ -1,24 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import sys
 from dataclasses import fields
+from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import get_type_hints
 
 import pytest
 
 
-def test_cli_import_does_not_require_claude_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import = __import__
-
-    def rejecting_import(name: str, *args: object, **kwargs: object):
-        if name == "claude_agent_sdk":
-            raise ModuleNotFoundError("no claude sdk")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.__import__", rejecting_import)
-    sys.modules.pop("lark_bot.cli", None)
-    __import__("lark_bot.cli")
+def test_cli_import_does_not_require_claude_sdk_in_fresh_process() -> None:
+    repo = Path(__file__).parents[1]
+    script = """
+import builtins
+real_import = builtins.__import__
+def rejecting_import(name, *args, **kwargs):
+    if name == 'claude_agent_sdk' or name.startswith('claude_agent_sdk.'):
+        raise ModuleNotFoundError('blocked claude_agent_sdk import')
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = rejecting_import
+import lark_bot.cli
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo / "src")
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_internal_contract_has_json_alias_and_dataclasses() -> None:
@@ -51,6 +68,34 @@ def test_internal_contract_has_json_alias_and_dataclasses() -> None:
         "result",
         "errors",
     }
+    options_hints = get_type_hints(ClaudeSdkOptions)
+    assert options_hints["cwd"] is str
+    assert options_hints["session_id"] is str
+    assert get_type_hints(ClaudeSdkOptions)["can_use_tool"].__origin__ is Callable
+    result_hints = get_type_hints(ClaudeSdkResult)
+    assert result_hints["session_id"] is str
+    assert result_hints["subtype"] is str
+    assert result_hints["duration_ms"] is int
+    assert result_hints["result"] == str | None
+
+
+def test_sdk_options_require_all_contract_fields() -> None:
+    from lark_bot.modules.claude.claude_sdk import ClaudePermissionResult, ClaudeSdkOptions
+
+    async def callback(tool_name, input_data, context):
+        return ClaudePermissionResult(allowed=True)
+
+    with pytest.raises(TypeError):
+        ClaudeSdkOptions()  # type: ignore[call-arg]
+    options = ClaudeSdkOptions(
+        cwd="/tmp/project",
+        model=None,
+        permission_mode=None,
+        resume=None,
+        session_id="local",
+        can_use_tool=callback,
+    )
+    assert options.cwd == "/tmp/project"
 
 
 def test_bridge_lazily_imports_sdk_and_translates_options_and_callbacks() -> None:
@@ -168,7 +213,19 @@ def test_bridge_translates_result_messages_without_exposing_sdk_objects() -> Non
     sdk.PermissionResultAllow = type("FakePermissionAllow", (), {})
     sdk.PermissionResultDeny = type("FakePermissionDeny", (), {})
     sdk.ResultMessage = FakeResultMessage
-    client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(ClaudeSdkOptions(session_id="local"))
+    async def callback(tool_name, input_data, context):
+        return ClaudePermissionResult(allowed=True)
+
+    client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(
+        ClaudeSdkOptions(
+            cwd="/tmp/project",
+            model=None,
+            permission_mode=None,
+            resume=None,
+            session_id="local",
+            can_use_tool=callback,
+        )
+    )
 
     async def collect() -> list[object]:
         return [message async for message in client.receive_response()]
@@ -225,7 +282,14 @@ def test_permission_callback_translates_denial_message() -> None:
         return ClaudePermissionResult(allowed=False, message="not allowed")
 
     client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(
-        ClaudeSdkOptions(can_use_tool=callback)
+        ClaudeSdkOptions(
+            cwd="/tmp/project",
+            model=None,
+            permission_mode=None,
+            resume=None,
+            session_id="local",
+            can_use_tool=callback,
+        )
     )
     wrapper = observed["options"]["can_use_tool"]
 
@@ -239,6 +303,67 @@ def test_permission_callback_translates_denial_message() -> None:
         assert result.message == "not allowed"
 
     asyncio.run(exercise())
+
+
+def test_result_message_uses_safe_required_fallbacks() -> None:
+    from lark_bot.modules.claude.claude_sdk import (
+        ClaudeAgentSdkBridge,
+        ClaudePermissionResult,
+        ClaudeSdkOptions,
+    )
+
+    class ResultMessage:
+        is_error = True
+        result = 42
+
+    class Allow:
+        def __init__(self, *, updated_input=None) -> None:
+            self.updated_input = updated_input
+
+    class Deny:
+        def __init__(self, *, message: str) -> None:
+            self.message = message
+
+    class Options:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class Client:
+        def __init__(self, *, options: Options) -> None:
+            self.options = options
+
+        async def receive_response(self):
+            yield ResultMessage()
+
+    sdk = ModuleType("claude_agent_sdk")
+    sdk.ClaudeSDKClient = Client
+    sdk.ClaudeAgentOptions = Options
+    sdk.PermissionResultAllow = Allow
+    sdk.PermissionResultDeny = Deny
+    sdk.ResultMessage = ResultMessage
+
+    async def callback(tool_name, input_data, context):
+        return ClaudePermissionResult(allowed=True)
+
+    client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(
+        ClaudeSdkOptions(
+            cwd="/tmp/project",
+            model=None,
+            permission_mode=None,
+            resume=None,
+            session_id="local",
+            can_use_tool=callback,
+        )
+    )
+
+    async def collect():
+        return [message async for message in client.receive_response()]
+
+    result = asyncio.run(collect())[0]
+    assert result.session_id == "local"
+    assert result.subtype == "unknown"
+    assert result.duration_ms == 0
+    assert result.result == "42"
 
 
 def test_result_errors_default_and_none_context_are_normalized() -> None:
@@ -285,7 +410,14 @@ def test_result_errors_default_and_none_context_are_normalized() -> None:
         return ClaudePermissionResult(allowed=True)
 
     client = ClaudeAgentSdkBridge(importer=lambda _: sdk)(
-        ClaudeSdkOptions(can_use_tool=callback)
+        ClaudeSdkOptions(
+            cwd="/tmp/project",
+            model=None,
+            permission_mode=None,
+            resume=None,
+            session_id="local",
+            can_use_tool=callback,
+        )
     )
     wrapper = client._sdk_client.options.kwargs["can_use_tool"]
 
@@ -297,11 +429,27 @@ def test_result_errors_default_and_none_context_are_normalized() -> None:
 
 
 def test_missing_sdk_raises_only_when_bridge_is_constructed() -> None:
-    from lark_bot.modules.claude.claude_sdk import ClaudeAgentSdkBridge, ClaudeSdkOptions
+    from lark_bot.modules.claude.claude_sdk import (
+        ClaudeAgentSdkBridge,
+        ClaudePermissionResult,
+        ClaudeSdkOptions,
+    )
 
     def missing(_: str):
         raise ModuleNotFoundError("No module named 'claude_agent_sdk'")
 
     bridge = ClaudeAgentSdkBridge(importer=missing)
     with pytest.raises(ModuleNotFoundError, match="claude_agent_sdk"):
-        bridge(ClaudeSdkOptions())
+        async def callback(tool_name, input_data, context):
+            return ClaudePermissionResult(allowed=True)
+
+        bridge(
+            ClaudeSdkOptions(
+                cwd="/tmp/project",
+                model=None,
+                permission_mode=None,
+                resume=None,
+                session_id="local",
+                can_use_tool=callback,
+            )
+        )

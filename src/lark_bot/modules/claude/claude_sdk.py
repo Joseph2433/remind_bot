@@ -40,21 +40,21 @@ class ClaudePermissionResult:
 
 @dataclass(frozen=True)
 class ClaudeSdkOptions:
-    cwd: str | None = None
-    model: str | None = None
-    permission_mode: str | None = None
-    resume: str | None = None
-    session_id: str | None = None
-    can_use_tool: CanUseToolCallback | None = None
+    cwd: str
+    model: str | None
+    permission_mode: str | None
+    resume: str | None
+    session_id: str
+    can_use_tool: CanUseToolCallback
 
 
 @dataclass(frozen=True)
 class ClaudeSdkResult:
-    session_id: str | None
-    subtype: str | None
+    session_id: str
+    subtype: str
     is_error: bool
-    duration_ms: int | None
-    result: JsonValue | None
+    duration_ms: int
+    result: str | None
     errors: tuple[str, ...] = ()
 
 
@@ -71,7 +71,7 @@ ClaudeSdkMessage: TypeAlias = ClaudeSdkResult | ClaudeSdkOtherMessage
 
 @runtime_checkable
 class ClaudeSdkClient(Protocol):
-    async def connect(self, prompt: str | None = None) -> None: ...
+    async def connect(self) -> None: ...
 
     async def query(self, prompt: str) -> None: ...
 
@@ -132,19 +132,16 @@ class _ClaudeSdkClient:
         self,
         sdk_client: Any,
         *,
-        session_id: str | None,
+        session_id: str,
         result_type: type[Any] | tuple[type[Any], ...] | None,
     ) -> None:
         self._sdk_client = sdk_client
         self._session_id = session_id
         self._result_type = result_type
 
-    async def connect(self, prompt: str | None = None) -> None:
+    async def connect(self) -> None:
         method = getattr(self._sdk_client, "connect")
-        if prompt is None:
-            await _maybe_await(method())
-        else:
-            await _maybe_await(method(prompt))
+        await _maybe_await(method())
 
     async def query(self, prompt: str) -> None:
         await _maybe_await(getattr(self._sdk_client, "query")(prompt))
@@ -172,10 +169,10 @@ class _ClaudeSdkClient:
         if self._is_result(message):
             return ClaudeSdkResult(
                 session_id=_optional_str(getattr(message, "session_id", None)) or self._session_id,
-                subtype=_optional_str(getattr(message, "subtype", None)),
+                subtype=_optional_str(getattr(message, "subtype", None)) or "unknown",
                 is_error=bool(getattr(message, "is_error", False)),
-                duration_ms=_optional_int(getattr(message, "duration_ms", None)),
-                result=_json_value(getattr(message, "result", None)),
+                duration_ms=_optional_int(getattr(message, "duration_ms", None)) or 0,
+                result=_safe_result(getattr(message, "result", None)),
                 errors=_safe_errors(getattr(message, "errors", None)),
             )
         payload = _safe_mapping(message)
@@ -202,6 +199,10 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_result(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 class ClaudeAgentSdkBridge:
@@ -243,13 +244,10 @@ class ClaudeAgentSdkBridge:
 
     @staticmethod
     def _wrap_callback(
-        callback: CanUseToolCallback | None,
+        callback: CanUseToolCallback,
         allow_type: type[Any],
         deny_type: type[Any],
     ) -> Callable[..., Awaitable[Any]] | None:
-        if callback is None:
-            return None
-
         async def wrapped(tool_name: str, input_data: Any, context: Any) -> Any:
             result = await callback(tool_name, _safe_mapping(input_data), _safe_context(context))
             if result.allowed:
