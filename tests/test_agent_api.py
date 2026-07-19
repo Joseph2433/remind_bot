@@ -152,8 +152,8 @@ def test_agent_session_create_bounds_and_repr_excludes_prompt():
         raise AssertionError("empty name must be rejected")
 
 
-def test_generic_claude_crud_status_resume_and_prompt_exclusion(tmp_path):
-    runtime, _, _, claude = _runtime(tmp_path)
+def test_generic_claude_crud_status_resume_and_prompt_exclusion(workspace_tmp_path):
+    runtime, _, _, claude = _runtime(workspace_tmp_path)
     headers = {"Authorization": "Bearer secret"}
     with TestClient(create_daemon_app(runtime, token="secret")) as client:
         response = client.post(
@@ -169,8 +169,8 @@ def test_generic_claude_crud_status_resume_and_prompt_exclusion(tmp_path):
         assert client.post("/api/v1/agents/claude/sessions/claude-1/cancel", headers=headers).status_code == 200
 
 
-def test_generic_hook_derives_provider_and_drops_sensitive_fields(tmp_path):
-    runtime, store, _, _ = _runtime(tmp_path)
+def test_generic_hook_derives_provider_and_drops_sensitive_fields(workspace_tmp_path):
+    runtime, store, _, _ = _runtime(workspace_tmp_path)
     headers = {"Authorization": "Bearer secret"}
     with TestClient(create_daemon_app(runtime, token="secret")) as client:
         response = client.post(
@@ -191,7 +191,7 @@ def test_generic_hook_derives_provider_and_drops_sensitive_fields(tmp_path):
             assert all("secret" not in str(item) for item in store.items)
 
 
-def test_invalid_provider_is_rejected(tmp_path):
-    runtime, *_ = _runtime(tmp_path)
+def test_invalid_provider_is_rejected(workspace_tmp_path):
+    runtime, *_ = _runtime(workspace_tmp_path)
     with TestClient(create_daemon_app(runtime, token="secret")) as client:
         assert client.get("/api/v1/agents/unknown/sessions", headers={"Authorization": "Bearer secret"}).status_code in {404, 422}

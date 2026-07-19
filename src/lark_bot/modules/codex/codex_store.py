@@ -97,8 +97,9 @@ def _interaction_from_agent(interaction: AgentInteraction) -> PendingInteraction
 
 
 class SQLiteCodexStore:
-    def __init__(self, path: str | Path) -> None:
-        self._store = SQLiteAgentStore(path)
+    def __init__(self, path: str | Path | SQLiteAgentStore) -> None:
+        self._store = path if isinstance(path, SQLiteAgentStore) else SQLiteAgentStore(path)
+        self._owns_store = not isinstance(path, SQLiteAgentStore)
         self.database = self._store.database
 
     def create_session(self, session: CodexSession) -> None:
@@ -364,10 +365,12 @@ class SQLiteCodexStore:
             yield connection
 
     def close(self) -> None:
-        self._store.close()
+        if self._owns_store:
+            self._store.close()
 
     def __enter__(self) -> Self:
-        self._store.__enter__()
+        if self._owns_store:
+            self._store.__enter__()
         return self
 
     def __exit__(
@@ -376,4 +379,5 @@ class SQLiteCodexStore:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self._store.__exit__(exc_type, exc_value, traceback)
+        if self._owns_store:
+            self._store.__exit__(exc_type, exc_value, traceback)
