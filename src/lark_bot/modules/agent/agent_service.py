@@ -48,6 +48,26 @@ class AgentSessionService:
                 if entry.users == 0 and not entry.lock.locked():
                     self._locks.pop(session_id, None)
 
+    @staticmethod
+    async def list_sessions(adapter: AgentAdapter, status: Any = None) -> list[Any]:
+        return await adapter.list_sessions(status)
+
+    @staticmethod
+    async def get_session(adapter: AgentAdapter, session_id: str) -> Any:
+        return await adapter.get_session(session_id)
+
+    @staticmethod
+    async def resolve_interaction(adapter: AgentAdapter, interaction_id: str, actor_id: str, **kwargs: Any) -> bool:
+        return await adapter.resolve_interaction(interaction_id, actor_id, **kwargs)
+
+    @staticmethod
+    def get_user_input_question_ids(adapter: AgentAdapter, interaction_id: str) -> tuple[str, ...]:
+        return adapter.get_user_input_question_ids(interaction_id)
+
+    @staticmethod
+    async def expire_due_interactions(adapter: AgentAdapter, now: Any = None) -> list[str]:
+        return await adapter.expire_due_interactions(now)
+
 
 class AgentRegistry:
     """Own one provider adapter per agent kind; sessions reuse those adapters."""

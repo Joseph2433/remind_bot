@@ -14,6 +14,10 @@ from lark_bot.modules.claude.claude_sdk import (
     ClaudeSdkOptions,
     ClaudeSdkResult,
 )
+from lark_bot.modules.claude.claude_session_manager import (
+    ClaudeSessionManager,
+    ClaudeSessionManagerContract,
+)
 from lark_bot.modules.claude.claude_hook_adapter import handle_callback, normalize_callback
 from lark_bot.modules.claude.claude_hook_installer import (
     HookCheck,
@@ -28,6 +32,8 @@ __all__ = [
     "ClaudePermissionResult",
     "ClaudeSdkOptions",
     "ClaudeSdkResult",
+    "ClaudeSessionManager",
+    "ClaudeSessionManagerContract",
     "ClaudeService",
     "build_claude_notification_from_json",
     "claude_event_to_notification",
