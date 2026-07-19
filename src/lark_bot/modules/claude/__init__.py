@@ -25,6 +25,11 @@ from lark_bot.modules.claude.claude_hook_installer import (
     install_hooks,
     uninstall_hooks,
 )
+from lark_bot.modules.claude.claude_tui import (
+    ClaudeTuiLauncher,
+    ClaudeTuiOptions,
+    disabled_hook_environment,
+)
 
 __all__ = [
     "ClaudeEvent",
@@ -43,4 +48,7 @@ __all__ = [
     "uninstall_hooks",
     "normalize_callback",
     "handle_callback",
+    "ClaudeTuiLauncher",
+    "ClaudeTuiOptions",
+    "disabled_hook_environment",
 ]

@@ -217,8 +217,6 @@ class DaemonRuntime:
                 if not isinstance(payload, dict):
                     continue
                 name = payload.get("hook_event_name")
-                if name not in {"SessionStart", "PermissionRequest", "Stop"}:
-                    continue
                 event_id = payload.get("event_id")
                 agent_value = payload.get("agent", "codex")
                 try:
@@ -279,7 +277,31 @@ class DaemonRuntime:
                         next_attempt_at=self._utc_now() + timedelta(seconds=delay),
                         item=item,
                     )
-            await asyncio.sleep(poll)
+            await self._wait_for_outbox_wake(poll)
+
+    async def _wait_for_outbox_wake(self, timeout: float) -> None:
+        """Provider queues only wake the poller; storage remains authoritative."""
+
+        queues: list[Any] = []
+        if self.agent_registry is not None:
+            adapters = [self.agent_registry.get(agent) for agent in self.agent_registry.registered()]
+        else:
+            adapters = [self.orchestrator]
+        for adapter in adapters:
+            queue = getattr(adapter, "events", None)
+            if queue is not None and hasattr(queue, "get"):
+                queues.append(queue)
+        if not queues:
+            await asyncio.sleep(timeout)
+            return
+        tasks = [asyncio.create_task(queue.get()) for queue in queues]
+        try:
+            await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _interaction_expiry_worker(self) -> None:
         poll = float(getattr(self.settings, "interaction_expiry_poll_seconds", 1.0))
