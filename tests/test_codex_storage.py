@@ -109,6 +109,15 @@ def test_create_get_list_and_update_sessions_in_memory():
     assert store.get_session("missing") is None
 
 
+def test_codex_noop_update_preserves_updated_at_and_value():
+    store = SQLiteCodexStore(":memory:")
+    session = make_session()
+    store.create_session(session)
+    before = store.get_session(session.id)
+    assert store.update_session(session.id) == before
+    assert store.get_session(session.id) == before
+
+
 def test_update_session_if_status_is_compare_and_swap():
     store = SQLiteCodexStore(":memory:")
     store.create_session(make_session(status=SessionStatus.RUNNING))

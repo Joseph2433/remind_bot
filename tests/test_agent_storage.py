@@ -411,10 +411,71 @@ def test_agent_transition_removes_codex_legacy_rows_and_privacy_holds():
             with store._connection() as connection:
                 text_fields = connection.execute("SELECT summary FROM agent_sessions UNION ALL SELECT payload_summary FROM agent_interactions UNION ALL SELECT payload_summary FROM agent_notification_outbox UNION ALL SELECT last_error FROM agent_notification_outbox UNION ALL SELECT detail_summary FROM agent_audit").fetchall()
                 assert all(secret not in (row[0] or "") for row in text_fields)
-                connection.execute("UPDATE agent_sessions SET agent='claude' WHERE id='s'")
-                assert connection.execute("SELECT COUNT(*) FROM codex_sessions WHERE id='s'").fetchone()[0] == 0
-                assert connection.execute("SELECT COUNT(*) FROM codex_interactions WHERE session_id='s'").fetchone()[0] == 0
-                assert connection.execute("SELECT COUNT(*) FROM notification_outbox WHERE session_id='s'").fetchone()[0] == 0
-                assert connection.execute("SELECT COUNT(*) FROM codex_audit WHERE session_id='s'").fetchone()[0] == 0
+                with pytest.raises(sqlite3.IntegrityError):
+                    connection.execute("UPDATE agent_sessions SET agent='claude' WHERE id='s'")
+                assert connection.execute("SELECT agent FROM agent_sessions WHERE id='s'").fetchone()[0] == "codex"
+                assert connection.execute("SELECT COUNT(*) FROM codex_sessions WHERE id='s'").fetchone()[0] == 1
+                assert connection.execute("SELECT COUNT(*) FROM codex_interactions WHERE session_id='s'").fetchone()[0] == 1
+                assert connection.execute("SELECT COUNT(*) FROM notification_outbox WHERE session_id='s'").fetchone()[0] == 1
+                assert connection.execute("SELECT COUNT(*) FROM codex_audit").fetchone()[0] == 1
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_pending_request_is_scoped_by_provider_and_audit_derives_session():
+    now = datetime.now(timezone.utc)
+    with SQLiteAgentStore(":memory:") as store:
+        for agent in (AgentKind.CODEX, AgentKind.CLAUDE):
+            store.create(AgentSession(session_id=agent.value, agent=agent, name=agent.value, created_at=now, updated_at=now))
+            store.create_interaction(AgentInteraction(interaction_id=f"{agent.value}-i", session_id=agent.value, request_id="shared", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now))
+        assert store.get_pending_interaction("shared", agent=AgentKind.CODEX).interaction_id == "codex-i"
+        assert store.get_pending_interaction("shared", agent=AgentKind.CLAUDE).interaction_id == "claude-i"
+        with pytest.raises(sqlite3.IntegrityError):
+            store.create_interaction(AgentInteraction(interaction_id="codex-2", session_id="codex", request_id="shared", kind=InteractionKind.EXEC_APPROVAL, requested_at=now, expires_at=now))
+        audit_id = store.record_audit(event_type="interaction", interaction_id="claude-i")
+        entries = store.list_audit(session_id="claude")
+        assert entries and entries[-1].id == audit_id and entries[-1].session_id == "claude"
+
+
+def test_codex_generic_waiting_status_is_rejected():
+    now = datetime.now(timezone.utc)
+    with pytest.raises(ValueError):
+        AgentSession(session_id="cx", agent=AgentKind.CODEX, name="cx", status=SessionStatus.WAITING, created_at=now, updated_at=now)
+    session = AgentSession(session_id="cl", agent=AgentKind.CLAUDE, name="cl", status=SessionStatus.WAITING, created_at=now, updated_at=now)
+    assert session.status is SessionStatus.WAITING
+
+
+def test_initialize_schema_migration_race_is_single_copy():
+    from pathlib import Path
+    for _ in range(5):
+        path = Path("tests") / f".agent-race-{uuid4().hex}.db"
+        try:
+            connection = sqlite3.connect(path)
+            connection.execute("CREATE TABLE codex_sessions(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,name TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,sandbox TEXT NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)")
+            connection.execute("CREATE TABLE codex_interactions(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,request_id TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,lark_message_id TEXT,payload_summary TEXT NOT NULL DEFAULT '',requested_at TEXT NOT NULL,resolved_at TEXT,expires_at TEXT NOT NULL,actor_id TEXT,decision TEXT)")
+            connection.execute("INSERT INTO codex_sessions VALUES('s',NULL,NULL,'s','',NULL,'workspace-write','running','', '2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')")
+            connection.execute("INSERT INTO codex_interactions VALUES('i','s','legacy','exec_approval','pending',NULL,'','2026-01-01T00:00:00+00:00',NULL,'2026-01-01T00:00:00+00:00',NULL,NULL)")
+            connection.execute("PRAGMA user_version=1"); connection.commit(); connection.close()
+            barrier = threading.Barrier(2)
+            errors: list[BaseException] = []
+            def worker() -> None:
+                try:
+                    connection = sqlite3.connect(path, timeout=10.0)
+                    connection.row_factory = sqlite3.Row
+                    barrier.wait(timeout=5)
+                    agent_schema.initialize_schema(connection)
+                    connection.close()
+                except BaseException as exc:
+                    errors.append(exc)
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(timeout=15)
+            assert not errors
+            check = sqlite3.connect(path)
+            assert check.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert check.execute("SELECT COUNT(*) FROM codex_interactions WHERE request_id='\"legacy\"'").fetchone()[0] == 1
+            assert check.execute("SELECT COUNT(*) FROM agent_interactions WHERE request_id='\"legacy\"'").fetchone()[0] == 1
+            assert check.execute("PRAGMA foreign_key_check").fetchall() == []
+            check.close()
+        finally:
+            path.unlink(missing_ok=True)

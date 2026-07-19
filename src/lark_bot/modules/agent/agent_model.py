@@ -71,6 +71,12 @@ class AgentSession(SessionRef):
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
+    @model_validator(mode="after")
+    def _codex_does_not_use_generic_waiting(self) -> "AgentSession":
+        if self.agent is AgentKind.CODEX and self.status is SessionStatus.WAITING:
+            raise ValueError("codex sessions must use a specific waiting status")
+        return self
+
 
 class AgentInteraction(BaseModel):
     interaction_id: str = Field(min_length=1)

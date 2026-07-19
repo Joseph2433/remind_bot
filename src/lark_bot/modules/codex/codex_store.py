@@ -126,6 +126,8 @@ class SQLiteCodexStore:
         summary: str | None = None,
         updated_at: datetime | None = None,
     ) -> CodexSession | None:
+        if status is None and thread_id is _UNSET and turn_id is _UNSET and summary is None and updated_at is None:
+            return self.get_session(session_id)
         changes: dict[str, object] = {}
         if status is not None:
             changes["status"] = SharedSessionStatus(status.value)

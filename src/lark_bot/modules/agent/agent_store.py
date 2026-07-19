@@ -120,12 +120,12 @@ class SQLiteAgentStore:
 
     def update(self, session: AgentSession, *, agent: AgentKind | str | None = None) -> None:
         predicate = "id=?"
-        args: tuple[object, ...] = session_values(session)[1:] + (session.session_id,)
+        args: tuple[object, ...] = session_values(session)[2:] + (session.session_id,)
         if agent is not None:
             predicate += " AND agent=?"
             args += (AgentKind(agent).value,)
         with self._connection() as c:
-            c.execute(f"""UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE {predicate}""", args)
+            c.execute(f"""UPDATE agent_sessions SET name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE {predicate}""", args)
 
     def update_session(self, session_id: str, *, agent: AgentKind | str | None = None, **changes: Any) -> AgentSession | None:
         current = self.get(session_id, agent=agent)
@@ -143,13 +143,13 @@ class SQLiteAgentStore:
         normalized.setdefault("updated_at", datetime.now(timezone.utc))
         value = current.model_copy(update=normalized)
         predicate = "id = ?"
-        args: list[object] = [*session_values(value)[1:], session_id]
+        args: list[object] = [*session_values(value)[2:], session_id]
         if agent is not None:
             predicate += " AND agent = ?"
             args.append(AgentKind(agent).value)
         with self._connection() as c:
             cur = c.execute(
-                f"UPDATE agent_sessions SET agent=?,name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE {predicate}",
+                f"UPDATE agent_sessions SET name=?,conversation_id=?,turn_id=?,cwd=?,model=?,sandbox=?,permission_mode=?,status=?,summary=?,created_at=?,updated_at=? WHERE {predicate}",
                 args,
             )
         return value if cur.rowcount == 1 else None
@@ -177,13 +177,15 @@ class SQLiteAgentStore:
         if interaction.status is InteractionStatus.PENDING and any((interaction.resolved_at, interaction.actor_id, interaction.decision)):
             raise ValueError("pending interaction cannot contain resolution metadata")
         with self._connection() as c:
-            if agent is not None:
-                row = c.execute("SELECT agent FROM agent_sessions WHERE id=?", (interaction.session_id,)).fetchone()
-                if row is None or row["agent"] != AgentKind(agent).value:
-                    raise ValueError("interaction session does not match provider")
+            row = c.execute("SELECT agent FROM agent_sessions WHERE id=?", (interaction.session_id,)).fetchone()
+            if row is None:
+                raise ValueError("interaction session does not exist")
+            derived = row["agent"]
+            if agent is not None and derived != AgentKind(agent).value:
+                raise ValueError("interaction session does not match provider")
             c.execute("""INSERT INTO agent_interactions
-                (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                (id,session_id,agent,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (interaction.interaction_id, interaction.session_id, derived, *interaction_values(interaction)[2:]))
 
     def get_interaction(self, interaction_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
         query = "SELECT i.* FROM agent_interactions i"; args: list[object] = [interaction_id]
@@ -193,9 +195,8 @@ class SQLiteAgentStore:
         return interaction_from_row(row) if row else None
 
     def get_pending_interaction(self, request_id: str, *, agent: AgentKind | str | None = None) -> AgentInteraction | None:
-        query = "SELECT i.* FROM agent_interactions i"; args: list[object] = []
-        if agent is not None: query += " JOIN agent_sessions s ON s.id=i.session_id AND s.agent=?"; args.append(AgentKind(agent).value)
-        query += " WHERE i.request_id = ? AND i.status = ?"; args.extend([request_id, InteractionStatus.PENDING.value])
+        query = "SELECT i.* FROM agent_interactions i WHERE i.request_id = ? AND i.status = ?"; args: list[object] = [request_id, InteractionStatus.PENDING.value]
+        if agent is not None: query += " AND i.agent=?"; args.append(AgentKind(agent).value)
         with self._connection() as c: row = c.execute(query, args).fetchone()
         return interaction_from_row(row) if row else None
 
@@ -218,7 +219,12 @@ class SQLiteAgentStore:
                     args += (AgentKind(agent).value,)
                 cur = c.execute(f"UPDATE agent_sessions SET status=?,updated_at=? WHERE id=? AND status IN (?,?,?,?,?){provider}", args)
                 if cur.rowcount != 1: return False
-                c.execute("""INSERT INTO agent_interactions (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", interaction_values(interaction))
+                row = c.execute("SELECT agent FROM agent_sessions WHERE id=?", (interaction.session_id,)).fetchone()
+                if row is None:
+                    raise ValueError("interaction session does not exist")
+                if agent is not None and row["agent"] != AgentKind(agent).value:
+                    raise ValueError("interaction session does not match provider")
+                c.execute("""INSERT INTO agent_interactions (id,session_id,agent,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (interaction.interaction_id, interaction.session_id, row["agent"], *interaction_values(interaction)[2:]))
         except sqlite3.IntegrityError: return False
         return True
 
@@ -437,6 +443,8 @@ class SQLiteAgentStore:
                     raise ValueError("audit interaction does not exist")
                 if session_id is not None and row["session_id"] != session_id:
                     raise ValueError("audit session and interaction do not match")
+                if session_id is None:
+                    session_id = row["session_id"]
                 derived = row["agent"]
             elif session_id is not None:
                 row = c.execute("SELECT agent FROM agent_sessions WHERE id=?", (session_id,)).fetchone()

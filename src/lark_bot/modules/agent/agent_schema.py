@@ -56,7 +56,7 @@ CANONICAL_TABLE_STATEMENTS: tuple[str, ...] = (
         summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );""",
     """CREATE TABLE IF NOT EXISTS agent_interactions (
-        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES agent_sessions(id), agent TEXT NOT NULL,
         request_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
         lark_message_id TEXT, payload_summary TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL,
         resolved_at TEXT, expires_at TEXT NOT NULL, actor_id TEXT, decision TEXT
@@ -80,7 +80,7 @@ CANONICAL_TABLE_STATEMENTS: tuple[str, ...] = (
 )
 
 CANONICAL_INDEX_STATEMENTS: tuple[str, ...] = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_interactions_pending_request ON agent_interactions(request_id) WHERE status = 'pending';",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_interactions_pending_request ON agent_interactions(agent, request_id) WHERE status = 'pending';",
     "CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions(agent, status);",
     "CREATE INDEX IF NOT EXISTS idx_agent_interactions_status ON agent_interactions(status);",
     "CREATE INDEX IF NOT EXISTS idx_agent_outbox_due ON agent_notification_outbox(sent_at, next_attempt_at);",
@@ -103,34 +103,31 @@ MIRROR_TRIGGER_STATEMENTS: tuple[str, ...] = (
       VALUES(NEW.id,NEW.conversation_id,NEW.turn_id,NEW.name,NEW.cwd,NEW.model,NEW.sandbox,NEW.status,NEW.summary,NEW.created_at,NEW.updated_at);
       UPDATE codex_sessions SET thread_id=NEW.conversation_id,turn_id=NEW.turn_id,name=NEW.name,cwd=NEW.cwd,model=NEW.model,sandbox=NEW.sandbox,status=NEW.status,summary=NEW.summary,created_at=NEW.created_at,updated_at=NEW.updated_at WHERE id=NEW.id;
     END;""",
-    """CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_agent_change
-    AFTER UPDATE OF agent ON agent_sessions WHEN OLD.agent='codex' AND NEW.agent<>'codex' BEGIN
-      DELETE FROM notification_outbox WHERE session_id=OLD.id;
-      DELETE FROM codex_audit WHERE session_id=OLD.id;
-      DELETE FROM codex_interactions WHERE session_id=OLD.id;
-      DELETE FROM codex_sessions WHERE id=OLD.id;
+    """CREATE TRIGGER IF NOT EXISTS trg_agent_session_agent_immutable
+    BEFORE UPDATE OF agent ON agent_sessions WHEN OLD.agent<>NEW.agent BEGIN
+      SELECT RAISE(ABORT, 'session agent is immutable');
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_session_codex_delete
     AFTER DELETE ON agent_sessions WHEN OLD.agent='codex' BEGIN
       DELETE FROM codex_sessions WHERE id=OLD.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_insert
-    AFTER INSERT ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
+    AFTER INSERT ON agent_interactions WHEN NEW.agent='codex' BEGIN
       INSERT OR IGNORE INTO codex_interactions(id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
       VALUES(NEW.id,NEW.session_id,NEW.request_id,NEW.kind,NEW.status,NEW.lark_message_id,NEW.payload_summary,NEW.requested_at,NEW.resolved_at,COALESCE(NEW.expires_at,NEW.requested_at),NEW.actor_id,NEW.decision);
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_update
-    AFTER UPDATE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=NEW.session_id)='codex' BEGIN
+    AFTER UPDATE ON agent_interactions WHEN NEW.agent='codex' BEGIN
       INSERT OR IGNORE INTO codex_interactions(id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
       VALUES(NEW.id,NEW.session_id,NEW.request_id,NEW.kind,NEW.status,NEW.lark_message_id,NEW.payload_summary,NEW.requested_at,NEW.resolved_at,COALESCE(NEW.expires_at,NEW.requested_at),NEW.actor_id,NEW.decision);
       UPDATE codex_interactions SET request_id=NEW.request_id,kind=NEW.kind,status=NEW.status,lark_message_id=NEW.lark_message_id,payload_summary=NEW.payload_summary,requested_at=NEW.requested_at,resolved_at=NEW.resolved_at,expires_at=COALESCE(NEW.expires_at,NEW.requested_at),actor_id=NEW.actor_id,decision=NEW.decision WHERE id=NEW.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_agent_change
-    AFTER UPDATE OF session_id ON agent_interactions WHEN OLD.session_id<>NEW.session_id AND (SELECT agent FROM agent_sessions WHERE id=OLD.session_id)='codex' BEGIN
+    AFTER UPDATE OF session_id ON agent_interactions WHEN OLD.agent='codex' AND NEW.agent<>'codex' BEGIN
       DELETE FROM codex_interactions WHERE id=OLD.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_interaction_codex_delete
-    AFTER DELETE ON agent_interactions WHEN (SELECT agent FROM agent_sessions WHERE id=OLD.session_id)='codex' BEGIN
+    AFTER DELETE ON agent_interactions WHEN OLD.agent='codex' BEGIN
       DELETE FROM codex_interactions WHERE id=OLD.id;
     END;""",
     """CREATE TRIGGER IF NOT EXISTS trg_agent_outbox_codex_insert
@@ -205,6 +202,19 @@ def _legacy_schema(connection: sqlite3.Connection) -> None:
 
 def _canonical_schema(connection: sqlite3.Connection) -> None:
     _execute_statements(connection, CANONICAL_TABLE_STATEMENTS)
+    columns = {row[1]: row for row in connection.execute("PRAGMA table_info(agent_interactions)")}
+    if "agent" not in columns:
+        connection.execute("ALTER TABLE agent_interactions ADD COLUMN agent TEXT")
+        connection.execute("UPDATE agent_interactions SET agent=(SELECT agent FROM agent_sessions WHERE id=agent_interactions.session_id) WHERE agent IS NULL")
+    elif not columns["agent"][3]:
+        connection.execute("ALTER TABLE agent_interactions RENAME TO agent_interactions_old")
+        connection.execute(CANONICAL_TABLE_STATEMENTS[1])
+        connection.execute("""INSERT INTO agent_interactions
+            (id,session_id,agent,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+            SELECT id,session_id,COALESCE(agent,(SELECT agent FROM agent_sessions WHERE id=agent_interactions_old.session_id)),request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision
+            FROM agent_interactions_old""")
+        connection.execute("DROP TABLE agent_interactions_old")
+    connection.execute("DROP INDEX IF EXISTS idx_agent_interactions_pending_request")
     _execute_statements(connection, CANONICAL_INDEX_STATEMENTS)
 
 
@@ -214,6 +224,7 @@ def _codex_mirror_triggers(connection: sqlite3.Connection) -> None:
         "trg_agent_session_codex_insert",
         "trg_agent_session_codex_update",
         "trg_agent_session_codex_agent_change",
+        "trg_agent_session_agent_immutable",
         "trg_agent_session_codex_delete",
         "trg_agent_interaction_codex_insert",
         "trg_agent_interaction_codex_update",
@@ -237,6 +248,9 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA foreign_keys = OFF")
     try:
         connection.execute("BEGIN IMMEDIATE")
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(f"unsupported agent schema version {version}; maximum is {SCHEMA_VERSION}")
         _legacy_schema(connection)
         if version == 1:
             _execute_statements(connection, MIGRATIONS[2])
@@ -250,8 +264,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             )
             connection.execute(
                 """INSERT OR IGNORE INTO agent_interactions
-                (id,session_id,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
-                SELECT id,session_id,""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
+                (id,session_id,agent,request_id,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision)
+                SELECT id,session_id,'codex',""" + request_expr + """,kind,status,lark_message_id,payload_summary,requested_at,resolved_at,expires_at,actor_id,decision FROM codex_interactions"""
             )
             connection.execute("INSERT OR IGNORE INTO agent_event_dedupe(agent,event_id,received_at) SELECT 'codex',event_id,received_at FROM codex_event_dedupe")
             connection.execute(
