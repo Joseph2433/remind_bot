@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib.metadata
+import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -39,6 +42,7 @@ class Settings(BaseSettings):
     daemon_port: int = Field(default=8787, ge=1, le=65535)
     daemon_token_path: Path = Path(".lark-bot/daemon.token")
     codex_path: str = "codex"
+    claude_path: str = "claude"
     interaction_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     interaction_expiry_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     outbox_poll_seconds: float = Field(default=0.5, gt=0, le=60)
@@ -51,7 +55,24 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def build_config_checks(settings: Settings) -> list[ConfigCheck]:
+def build_config_checks(
+    settings: Settings,
+    *,
+    executable_lookup: Callable[[str], str | None] | None = None,
+    package_version: Callable[[str], str] | None = None,
+) -> list[ConfigCheck]:
+    lookup = executable_lookup or shutil.which
+    version_lookup = package_version or importlib.metadata.version
+    try:
+        claude_available = bool(lookup(settings.claude_path))
+    except Exception:
+        claude_available = False
+    try:
+        version_lookup("claude-agent-sdk")
+    except Exception:
+        sdk_available = False
+    else:
+        sdk_available = True
     checks = [
         _required_check("lark_app_id", settings.lark_app_id, "LARK_BOT_LARK_APP_ID is required."),
         _required_check(
@@ -79,6 +100,24 @@ def build_config_checks(settings: Settings) -> list[ConfigCheck]:
             ok=settings.message_format in {"card", "text"},
             message=f"message_format={settings.message_format}",
         ),
+        ConfigCheck(
+            name="claude_executable",
+            ok=claude_available,
+            message=(
+                "Claude executable is available."
+                if claude_available
+                else "Claude executable is unavailable."
+            ),
+        ),
+        ConfigCheck(
+            name="claude_agent_sdk",
+            ok=sdk_available,
+            message=(
+                "Claude Agent SDK is available."
+                if sdk_available
+                else "Claude Agent SDK is unavailable."
+            ),
+        ),
     ]
     return checks
 
@@ -99,6 +138,7 @@ def public_settings_summary(settings: Settings) -> dict[str, str | int | float]:
         "daemon_port": settings.daemon_port,
         "daemon_token_path": str(settings.daemon_token_path),
         "codex_path": settings.codex_path,
+        "claude_path": "[configured]" if settings.claude_path else "[missing]",
         "interaction_timeout_seconds": settings.interaction_timeout_seconds,
         "interaction_expiry_poll_seconds": settings.interaction_expiry_poll_seconds,
         "outbox_poll_seconds": settings.outbox_poll_seconds,
