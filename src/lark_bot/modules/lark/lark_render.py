@@ -133,9 +133,15 @@ def _outbox_heading_and_instruction(
         notification_type.replace("orchestrator:", "Codex ").replace("_", " "),
     )
     instruction: str | None = None
-    if notification_type.endswith("interaction_requested"):
+    if notification_type.endswith("interaction_requested") or notification_type in {
+        "permission_request",
+        "user_input",
+    }:
         provider = session.agent.value.title() if session is not None else "Codex"
-        if _interaction_kind_is(interaction, InteractionKind.USER_INPUT):
+        if notification_type == "user_input" or _interaction_kind_is(
+            interaction,
+            InteractionKind.USER_INPUT,
+        ):
             heading = f"{provider} 请求输入"
             instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
         else:
@@ -301,7 +307,10 @@ def _status_template(status: TaskStatus) -> HeaderTemplate:
 
 def _outbox_template(notification_type: str, interaction: Any | None) -> HeaderTemplate:
     lowered = notification_type.casefold()
-    if lowered.endswith("interaction_requested"):
+    if lowered.endswith("interaction_requested") or lowered in {
+        "permission_request",
+        "user_input",
+    }:
         return "orange"
     if any(token in lowered for token in ("failed", "interrupted", "degraded", "error")):
         return "red"

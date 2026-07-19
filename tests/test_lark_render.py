@@ -160,7 +160,7 @@ def test_outbox_claude_approval_uses_provider_heading_and_generic_instructions()
         "Item",
         (),
         {
-            "notification_type": "orchestrator:interaction_requested",
+            "notification_type": "permission_request",
             "payload_summary": "run ls",
             "interaction_id": "i1",
         },
@@ -176,6 +176,29 @@ def test_outbox_claude_approval_uses_provider_heading_and_generic_instructions()
 
     assert rendered.content["header"]["title"]["content"] == "Claude 请求审批"
     assert rendered.content["header"]["template"] == "orange"
+
+
+def test_outbox_claude_user_input_uses_actionable_heading():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "user_input",
+            "payload_summary": "Tool permission: AskUserQuestion",
+            "interaction_id": "i1",
+        },
+    )()
+    interaction = type("Interaction", (), {"kind": InteractionKind.USER_INPUT})()
+    display = SessionDisplay(
+        agent=AgentKind.CLAUDE,
+        session_id="claude-session",
+        session_name="docs",
+    )
+
+    rendered = render_outbox_notification(item, interaction=interaction, session=display)
+
+    assert rendered.content["header"]["title"]["content"] == "Claude 请求输入"
+    assert "回复本消息" in rendered.content["body"]["elements"][0]["content"]
 
 
 def test_outbox_card_preserves_markdown_without_outer_code_fence():
