@@ -44,7 +44,11 @@ class PermissionClient(FakeClient):
         self.requested.set()
         self.permission_result = await self.callback(
             "AskUserQuestion",
-            {"questions": [{"question": "q-1", "options": []}], "secret": "do-not-store"},
+            {
+                "questions": [{"question": "q-1", "options": []}],
+                "description": "unmasked-tool-input-should-never-persist",
+                "secret": "do-not-store",
+            },
             None,
         )
 
@@ -100,6 +104,13 @@ def test_permission_payload_is_bounded_and_answers_stay_in_memory():
         interaction_id = next(iter(manager._live[session.session_id].interactions))
         interaction = store.get_interaction(interaction_id, agent=AgentKind.CLAUDE)
         assert "do-not-store" not in interaction.payload_summary
+        assert "unmasked-tool-input-should-never-persist" not in interaction.payload_summary
+        outbox = store.list_due_outbox(agent=AgentKind.CLAUDE)
+        assert outbox
+        assert all(
+            "unmasked-tool-input-should-never-persist" not in item.payload_summary
+            for item in outbox
+        )
         assert manager.get_user_input_question_ids(interaction.interaction_id) == ("q-1",)
         assert await manager.resolve_interaction(interaction.interaction_id, "tester", answers={"q-1": "yes"})
         assert not await manager.resolve_interaction(interaction.interaction_id, "late", answers={"q-1": "no"})

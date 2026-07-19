@@ -426,8 +426,7 @@ class ClaudeSessionManager:
                 for index, question in enumerate(input_data.get("questions", []))
                 if isinstance(question, Mapping)
             ) if is_question else ()
-            description = input_data.get("description", "") if isinstance(input_data, Mapping) else ""
-            payload = _summary(f"{tool_name}: {description}")
+            payload = _summary(f"Tool permission: {tool_name}")
             interaction = AgentInteraction(
                 interaction_id=interaction_id,
                 session_id=session_id,
