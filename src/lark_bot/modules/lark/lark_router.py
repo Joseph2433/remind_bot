@@ -13,9 +13,15 @@ from lark_bot.modules.lark.lark_event import (
 
 
 class LarkControlRouter:
-    def __init__(self, store: Any, orchestrator: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        orchestrator: Any | None = None,
+        *,
+        dispatcher: Any | None = None,
+    ) -> None:
         self._store = store
-        self._orchestrator = orchestrator
+        self._resolver = dispatcher or orchestrator
 
     async def route(self, event: LarkControlEvent) -> LarkControlResult:
         if not self._store.record_event_once(event.event_id):
@@ -33,19 +39,19 @@ class LarkControlRouter:
         if interaction is None:
             return LarkControlResult(False, "not_pending")
         if _interaction_kind_is(interaction, InteractionKind.USER_INPUT):
-            return LarkControlResult(False, "wrong_interaction_kind", interaction.id)
+            return LarkControlResult(False, "wrong_interaction_kind", _interaction_id(interaction))
         emoji = event.emoji_type.casefold()
         if emoji in {"thumbsup", "+1"}:
             allow = True
         elif emoji in {"thumbsdown", "-1"}:
             allow = False
         else:
-            return LarkControlResult(False, "unsupported_emoji", interaction.id)
-        won = await self._orchestrator.resolve_interaction(
-            interaction.id, event.actor_id, allow=allow
+            return LarkControlResult(False, "unsupported_emoji", _interaction_id(interaction))
+        won = await self._resolver.resolve_interaction(
+            _interaction_id(interaction), event.actor_id, allow=allow
         )
         return LarkControlResult(
-            won, "resolved" if won else "already_resolved", interaction.id
+            won, "resolved" if won else "already_resolved", _interaction_id(interaction)
         )
 
     async def _route_message(self, event: LarkMessageEvent) -> LarkControlResult:
@@ -66,27 +72,27 @@ class LarkControlRouter:
             allow = _parse_approval_answer(text)
             if allow is None:
                 return LarkControlResult(
-                    False, "invalid_approval_answer", interaction.id
+                    False, "invalid_approval_answer", _interaction_id(interaction)
                 )
-            won = await self._orchestrator.resolve_interaction(
-                interaction.id, event.actor_id, allow=allow
+            won = await self._resolver.resolve_interaction(
+                _interaction_id(interaction), event.actor_id, allow=allow
             )
             return LarkControlResult(
-                won, "resolved" if won else "already_resolved", interaction.id
+                won, "resolved" if won else "already_resolved", _interaction_id(interaction)
             )
         if not _interaction_kind_is(interaction, InteractionKind.USER_INPUT):
-            return LarkControlResult(False, "wrong_interaction_kind", interaction.id)
+            return LarkControlResult(False, "wrong_interaction_kind", _interaction_id(interaction))
         if event.chat_type.casefold() != "p2p" and not event.mentioned_bot:
-            return LarkControlResult(False, "bot_not_mentioned", interaction.id)
-        question_ids = self._orchestrator.get_user_input_question_ids(interaction.id)
+            return LarkControlResult(False, "bot_not_mentioned", _interaction_id(interaction))
+        question_ids = self._resolver.get_user_input_question_ids(_interaction_id(interaction))
         answers = _parse_answers(text, question_ids)
         if answers is None:
-            return LarkControlResult(False, "invalid_answers", interaction.id)
-        won = await self._orchestrator.resolve_interaction(
-            interaction.id, event.actor_id, answers=answers
+            return LarkControlResult(False, "invalid_answers", _interaction_id(interaction))
+        won = await self._resolver.resolve_interaction(
+            _interaction_id(interaction), event.actor_id, answers=answers
         )
         return LarkControlResult(
-            won, "resolved" if won else "already_resolved", interaction.id
+            won, "resolved" if won else "already_resolved", _interaction_id(interaction)
         )
 
 
@@ -101,6 +107,13 @@ def _interaction_kind_value(interaction: Any) -> str | None:
     kind = getattr(interaction, "kind", None)
     value = getattr(kind, "value", kind)
     return value if isinstance(value, str) else None
+
+
+def _interaction_id(interaction: Any) -> str:
+    value = getattr(interaction, "interaction_id", None)
+    if value is None:
+        value = getattr(interaction, "id", None)
+    return str(value)
 
 
 def _interaction_kind_is(interaction: Any, expected: InteractionKind) -> bool:

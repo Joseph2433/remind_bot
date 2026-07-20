@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from lark_bot.modules.agent.agent_model import AgentKind, InteractionKind
+from lark_bot.modules.agent.agent_model import AgentKind, InteractionDecision, InteractionKind
 
 
 class SessionStatus(StrEnum):
@@ -24,15 +24,6 @@ class InteractionStatus(StrEnum):
     RESOLVED = "resolved"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
-
-
-class InteractionDecision(StrEnum):
-    APPROVED = "approved"
-    DENIED = "denied"
-    ACCEPT = "accept"
-    DECLINE = "decline"
-    GRANTED = "granted"
-    SUBMITTED = "submitted"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

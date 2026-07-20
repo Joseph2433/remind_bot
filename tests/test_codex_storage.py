@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import inspect
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,15 @@ from lark_bot.modules.codex.codex_store import SQLiteCodexStore
 
 
 NOW = datetime(2026, 7, 12, 4, 0, tzinfo=timezone.utc)
+
+
+def test_codex_typed_storage_signatures_are_keyword_only():
+    enqueue = inspect.signature(SQLiteCodexStore.enqueue_outbox)
+    audit = inspect.signature(SQLiteCodexStore.record_audit)
+    assert list(enqueue.parameters)[0] == "self"
+    assert list(audit.parameters)[0] == "self"
+    assert enqueue.parameters["notification_type"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert audit.parameters["event_type"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 @pytest.fixture
@@ -97,6 +107,15 @@ def test_create_get_list_and_update_sessions_in_memory():
     assert updated.summary == "redacted approval summary"
     assert updated.updated_at == updated_at
     assert store.get_session("missing") is None
+
+
+def test_codex_noop_update_preserves_updated_at_and_value():
+    store = SQLiteCodexStore(":memory:")
+    session = make_session()
+    store.create_session(session)
+    before = store.get_session(session.id)
+    assert store.update_session(session.id) == before
+    assert store.get_session(session.id) == before
 
 
 def test_update_session_if_status_is_compare_and_swap():
@@ -795,7 +814,7 @@ def test_schema_version_and_required_indexes_are_installed():
             )
         }
 
-    assert version == 3
+    assert version == 4
     assert {
         "idx_codex_sessions_status",
         "idx_codex_interactions_status",
@@ -872,7 +891,7 @@ def test_schema_v1_migration_canonicalizes_request_ids_and_preserves_reuse(
     assert store.get_interaction(interaction.id).request_id == '"legacy-id"'
     with store._connection() as migrated:
         assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 4
         columns = {
             row[1]
             for row in migrated.execute("PRAGMA table_info(notification_outbox)")

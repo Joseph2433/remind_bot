@@ -2,7 +2,7 @@
 
 Lark Bot is a local companion service for code agents and command-line jobs. It does not write code, make decisions, or run as an independent agent. It watches a task, summarizes the result, redacts sensitive output, and sends a Lark/Feishu mobile notification through a self-built app Bot.
 
-The original MVP follows the same practical shape as `ntfy done`: wrap a command, wait for it to finish, then notify. The Codex automation daemon extends that foundation with managed app-server sessions and a bidirectional Lark approval/input loop.
+The original MVP follows the same practical shape as `ntfy done`: wrap a command, wait for it to finish, then notify. The daemon extends that foundation with managed Codex and Claude sessions plus a bidirectional Lark approval/input loop.
 
 ## Features
 
@@ -21,6 +21,8 @@ The original MVP follows the same practical shape as `ntfy done`: wrap a command
 - Keep unattended Codex jobs available under an explicit `codex job` namespace.
 - Approve or deny Codex requests by replying `yes`/`y` or `no`/`n` to the notification, and answer questions by replying to the notification.
 - Install auditable Codex notify fragments for one-way fallback notifications.
+- Install project-scoped Claude Code Hooks for nonblocking terminal notifications.
+- Launch the native Claude Code TUI or run managed Claude Agent SDK jobs with resume, cancellation, approvals, and user input.
 
 ## Lark/Feishu App Setup
 
@@ -55,6 +57,7 @@ LARK_BOT_DAEMON_HOST=127.0.0.1
 LARK_BOT_DAEMON_PORT=8787
 LARK_BOT_DAEMON_TOKEN_PATH=.lark-bot/daemon.token
 LARK_BOT_CODEX_PATH=codex
+LARK_BOT_CLAUDE_PATH=claude
 LARK_BOT_INTERACTION_TIMEOUT_SECONDS=1800
 LARK_BOT_INTERACTION_EXPIRY_POLL_SECONDS=1
 LARK_BOT_OUTBOX_POLL_SECONDS=0.5
@@ -185,6 +188,47 @@ lark-bot codex hooks uninstall --project .
 
 The installer writes an auditable notify fragment without replacing `config.toml`. The normal `lark-bot codex` launcher injects the equivalent callback safely and chains an existing top-level Codex `notify` command. If the daemon is unavailable, `codex-hook` stores only a small sanitized event under `.lark-bot/spool/` for later delivery.
 
+### Claude Code
+
+Verify the installed Claude Code executable without making a model request:
+
+```bash
+claude --version
+```
+
+Install project-scoped asynchronous Hooks explicitly. The launcher never edits Claude settings automatically:
+
+```bash
+lark-bot claude hooks install --project .
+lark-bot claude hooks check --project .
+lark-bot claude hooks uninstall --project .
+```
+
+Ordinary terminal sessions use these Hooks for nonblocking, one-way notifications. Hook callbacks keep only bounded event identity and safe metadata; prompts, transcripts, working directories, tool input, and complete output are not spooled.
+
+Launch the native Claude Code TUI with its arguments passed through unchanged:
+
+```bash
+lark-bot claude
+lark-bot claude --model MODEL
+lark-bot claude --resume PROVIDER_SESSION_ID
+lark-bot claude --no-lark
+```
+
+`--no-lark` disables only the Lark Bot-owned callback for that process. It does not remove or disable user Hooks.
+
+Managed jobs use the official Claude Agent SDK and the local authenticated daemon:
+
+```bash
+lark-bot claude job start --name build --cwd . "run tests"
+lark-bot claude job start --resume PROVIDER_SESSION_ID "continue"
+lark-bot claude job list --json
+lark-bot claude job show LOCAL_SESSION_ID
+lark-bot claude job cancel LOCAL_SESSION_ID
+```
+
+Resume creates a new local job ID and stores the provider session ID separately. Managed approvals and `AskUserQuestion` replies use first-response-wins semantics. Missing sessions, delivery failures, shutdown, and interaction timeouts deny permission rather than allowing a tool implicitly. Automated tests use injected SDK fakes and do not make model calls.
+
 Wrap a successful command:
 
 ```bash
@@ -241,7 +285,7 @@ Implementation modules are grouped by functional ownership under `src/lark_bot/`
 - `modules/notification/`: notification models, dedupe send service, and storage protocol.
 - `modules/lark/`: Lark OpenAPI client, inbound event normalization, reply routing, rendering, and long connection.
 - `modules/codex/`: Codex models, app-server transport, gateway, TUI, hooks, orchestration, and SQLite persistence.
-- `modules/claude/`: Claude Code Hook/event models, adapter, service, and CLI integration.
+- `modules/claude/`: Claude Code Hooks, native launcher, Agent SDK bridge, managed session lifecycle, and service adapter.
 - `server/daemon/`: authenticated daemon API, shared Bot runtime, provider registry composition, and workers.
 - `server/`: public FastAPI event callback endpoints.
 
@@ -257,6 +301,7 @@ The daemon owns one Lark Bot client and can serve multiple independent Codex or 
 - The daemon API is loopback-only by default and requires a generated bearer token.
 - Full prompts, full agent output, Lark tokens, and raw user replies are not persisted.
 - Approvals apply only to the current request or turn; persistent and session-wide approval rules are not created.
+- Claude permission timeouts, shutdown, missing-session, and delivery-failure paths fail closed.
 
 ## Roadmap
 
@@ -278,4 +323,4 @@ Reserved for later:
 - Interactive cards
 - Direct mobile task creation and richer task detail views
 - Redis or Postgres storage backends
-- Dedicated adapters for Claude Code, build systems, and test runners
+- Dedicated adapters for additional build systems and test runners

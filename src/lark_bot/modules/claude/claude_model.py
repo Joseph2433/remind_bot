@@ -2,21 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ClaudeEvent(BaseModel):
-    session_id: str = Field(min_length=1)
-    session_name: str = Field(default="claude", min_length=1)
-    event_name: str = Field(min_length=1)
-    status: str = "completed"
-    command: list[str] = Field(default_factory=lambda: ["claude"])
-    exit_code: int | None = None
-    duration_seconds: float = 0
-    summary: str = ""
-    output_tail: list[str] = Field(default_factory=list)
-    stderr_tail: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    session_id: str = Field(min_length=1, max_length=200)
+    hook_event_name: str = Field(min_length=1, max_length=100)
+    event_id: str | None = Field(default=None, min_length=1, max_length=200)
+    prompt_id: str | None = Field(default=None, max_length=200)
+    source: str | None = Field(default=None, max_length=100)
+    reason: str | None = Field(default=None, max_length=100)
+    notification_type: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, max_length=200)
+    message: str | None = Field(default=None, max_length=1000)
+    error: str | None = Field(default=None, max_length=100)
+    stop_hook_active: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -26,9 +28,7 @@ class ClaudeEvent(BaseModel):
         normalized = dict(data)
         aliases = {
             "session_id": ("sessionId",),
-            "session_name": ("name",),
-            "event_name": ("hook_event_name",),
-            "output_tail": ("stdout_tail",),
+            "hook_event_name": ("event_name",),
         }
         for target, sources in aliases.items():
             if target in normalized:

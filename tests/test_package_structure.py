@@ -93,6 +93,23 @@ def test_codex_runtime_modules_live_under_codex_package() -> None:
     assert hasattr(modules["probe"], "run_local_probe")
 
 
+def test_claude_package_exports_runtime_boundaries() -> None:
+    claude = import_module("lark_bot.modules.claude")
+
+    for name in (
+        "ClaudeAgentSdkBridge",
+        "ClaudeSessionManager",
+        "ClaudeService",
+        "ClaudeTuiLauncher",
+        "ClaudeTuiOptions",
+        "check_hooks",
+        "handle_callback",
+        "install_hooks",
+        "uninstall_hooks",
+    ):
+        assert hasattr(claude, name)
+
+
 def test_lark_modules_separate_client_routing_and_connection() -> None:
     assert import_module("lark_bot.modules.lark.lark_client").LarkBotClient
     assert import_module("lark_bot.modules.lark.lark_event").LarkMessageEvent

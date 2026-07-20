@@ -54,6 +54,15 @@ def test_task_card_redacts_secrets_and_maps_status_color():
     assert "Need user input" in markdown
 
 
+def test_completed_task_card_uses_green_status_color() -> None:
+    rendered = render_task_notification(
+        _request(status=TaskStatus.COMPLETED, tags=["turn_completed"]),
+        message_format="card",
+    )
+
+    assert rendered.content["header"]["template"] == "green"
+
+
 def test_task_card_preserves_output_markdown_without_outer_code_fence():
     request = _request(stdout_tail=["## 结果", "", "```python", "print('ok')", "```"])
 
@@ -144,6 +153,52 @@ def test_outbox_approval_card_includes_instructions():
     assert "[REDACTED]" in body
     assert "yes 或 y" in body
     assert "no 或 n" in body
+
+
+def test_outbox_claude_approval_uses_provider_heading_and_generic_instructions():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "permission_request",
+            "payload_summary": "run ls",
+            "interaction_id": "i1",
+        },
+    )()
+    interaction = type("Interaction", (), {"kind": InteractionKind.PERMISSION_REQUEST})()
+    display = SessionDisplay(
+        agent=AgentKind.CLAUDE,
+        session_id="claude-session",
+        session_name="docs",
+    )
+
+    rendered = render_outbox_notification(item, interaction=interaction, session=display)
+
+    assert rendered.content["header"]["title"]["content"] == "Claude 请求审批"
+    assert rendered.content["header"]["template"] == "orange"
+
+
+def test_outbox_claude_user_input_uses_actionable_heading():
+    item = type(
+        "Item",
+        (),
+        {
+            "notification_type": "user_input",
+            "payload_summary": "Tool permission: AskUserQuestion",
+            "interaction_id": "i1",
+        },
+    )()
+    interaction = type("Interaction", (), {"kind": InteractionKind.USER_INPUT})()
+    display = SessionDisplay(
+        agent=AgentKind.CLAUDE,
+        session_id="claude-session",
+        session_name="docs",
+    )
+
+    rendered = render_outbox_notification(item, interaction=interaction, session=display)
+
+    assert rendered.content["header"]["title"]["content"] == "Claude 请求输入"
+    assert "回复本消息" in rendered.content["body"]["elements"][0]["content"]
 
 
 def test_outbox_card_preserves_markdown_without_outer_code_fence():

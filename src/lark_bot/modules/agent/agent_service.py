@@ -48,6 +48,26 @@ class AgentSessionService:
                 if entry.users == 0 and not entry.lock.locked():
                     self._locks.pop(session_id, None)
 
+    @staticmethod
+    async def list_sessions(adapter: AgentAdapter, status: Any = None) -> list[Any]:
+        return await adapter.list_sessions(status)
+
+    @staticmethod
+    async def get_session(adapter: AgentAdapter, session_id: str) -> Any:
+        return await adapter.get_session(session_id)
+
+    @staticmethod
+    async def resolve_interaction(adapter: AgentAdapter, interaction_id: str, actor_id: str, **kwargs: Any) -> bool:
+        return await adapter.resolve_interaction(interaction_id, actor_id, **kwargs)
+
+    @staticmethod
+    def get_user_input_question_ids(adapter: AgentAdapter, interaction_id: str) -> tuple[str, ...]:
+        return adapter.get_user_input_question_ids(interaction_id)
+
+    @staticmethod
+    async def expire_due_interactions(adapter: AgentAdapter, now: Any = None) -> list[str]:
+        return await adapter.expire_due_interactions(now)
+
 
 class AgentRegistry:
     """Own one provider adapter per agent kind; sessions reuse those adapters."""
@@ -70,3 +90,42 @@ class AgentRegistry:
 
     def registered(self) -> tuple[AgentKind, ...]:
         return tuple(self._adapters)
+
+
+class AgentInteractionDispatcher:
+    """Resolve an interaction through its canonical persisted session owner."""
+
+    def __init__(self, store: Any, registry: AgentRegistry) -> None:
+        self.store = store
+        self.registry = registry
+
+    async def resolve_interaction(
+        self,
+        interaction_id: str,
+        actor_id: str,
+        **resolution: object,
+    ) -> bool:
+        interaction = self.store.get_interaction(interaction_id)
+        if interaction is None:
+            return False
+        session = self.store.get_session(interaction.session_id)
+        if session is None:
+            return False
+        try:
+            adapter = self.registry.get(session.agent)
+        except (KeyError, ValueError):
+            return False
+        return bool(await adapter.resolve_interaction(interaction_id, actor_id, **resolution))
+
+    def get_user_input_question_ids(self, interaction_id: str) -> tuple[str, ...]:
+        interaction = self.store.get_interaction(interaction_id)
+        if interaction is None:
+            return ()
+        session = self.store.get_session(interaction.session_id)
+        if session is None:
+            return ()
+        try:
+            adapter = self.registry.get(session.agent)
+        except (KeyError, ValueError):
+            return ()
+        return tuple(adapter.get_user_input_question_ids(interaction_id))

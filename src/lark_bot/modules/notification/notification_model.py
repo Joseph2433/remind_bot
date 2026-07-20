@@ -14,6 +14,7 @@ class AgentNotificationInput(BaseModel):
     session_id: str | None = None
     session_name: str | None = None
     event_name: str | None = None
+    event_id: str | None = None
     exit_code: int | None = None
     duration_seconds: float = 0
     summary: str = ""
@@ -32,9 +33,12 @@ class NotificationRequest(BaseModel):
     task: TaskResult
     detection: DetectionResult
     context: NotificationContext | None = None
+    event_id: str | None = None
 
     @property
     def dedupe_key(self) -> str:
+        if self.event_id:
+            return f"{self.task.source}:{self.event_id}"
         command_text = " ".join(self.task.command)
         session = self.context.session_id if self.context else "-"
         return f"{self.task.source}:{session}:{self.task.name}:{command_text}:{self.detection.status}"

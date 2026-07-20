@@ -59,9 +59,9 @@ def render_outbox_notification(
     interaction: Any | None = None,
     session: SessionDisplay | None = None,
 ) -> RenderedMessage:
-    heading, instruction = _outbox_heading_and_instruction(item, interaction)
     summary = redact_text(str(item.payload_summary))
     display = session or _session_display_from_item(item)
+    heading, instruction = _outbox_heading_and_instruction(item, interaction, display)
     label = display.label if display is not None else None
     plain = _outbox_plain_text(heading, summary, instruction, label)
     plain = _escape_lark_at_tags(plain)
@@ -123,7 +123,9 @@ def _task_markdown(request: NotificationRequest, *, tail_lines: int) -> str:
 
 
 def _outbox_heading_and_instruction(
-    item: Any, interaction: Any | None
+    item: Any,
+    interaction: Any | None,
+    session: SessionDisplay | None = None,
 ) -> tuple[str, str | None]:
     notification_type = str(item.notification_type)
     heading = _OUTBOX_HEADINGS.get(
@@ -131,12 +133,19 @@ def _outbox_heading_and_instruction(
         notification_type.replace("orchestrator:", "Codex ").replace("_", " "),
     )
     instruction: str | None = None
-    if notification_type.endswith("interaction_requested"):
-        if _interaction_kind_is(interaction, InteractionKind.USER_INPUT):
-            heading = "Codex 请求输入"
+    if notification_type.endswith("interaction_requested") or notification_type in {
+        "permission_request",
+        "user_input",
+    }:
+        provider = session.agent.value.title() if session is not None else "Codex"
+        if notification_type == "user_input" or _interaction_kind_is(
+            interaction,
+            InteractionKind.USER_INPUT,
+        ):
+            heading = f"{provider} 请求输入"
             instruction = "请回复本消息并 @机器人。若有多个问题，请每行使用 `1: 回答` 的格式。"
         else:
-            heading = "Codex 请求审批"
+            heading = f"{provider} 请求审批"
             instruction = (
                 "请长按本消息并选择“回复”：输入 yes 或 y 表示允许，"
                 "输入 no 或 n 表示拒绝。也可使用 👍 / 👎。"
@@ -289,7 +298,7 @@ def _closes_fence(
 
 
 def _status_template(status: TaskStatus) -> HeaderTemplate:
-    if status is TaskStatus.SUCCEEDED:
+    if status in {TaskStatus.SUCCEEDED, TaskStatus.COMPLETED}:
         return "green"
     if status is TaskStatus.FAILED:
         return "red"
@@ -298,7 +307,10 @@ def _status_template(status: TaskStatus) -> HeaderTemplate:
 
 def _outbox_template(notification_type: str, interaction: Any | None) -> HeaderTemplate:
     lowered = notification_type.casefold()
-    if lowered.endswith("interaction_requested"):
+    if lowered.endswith("interaction_requested") or lowered in {
+        "permission_request",
+        "user_input",
+    }:
         return "orange"
     if any(token in lowered for token in ("failed", "interrupted", "degraded", "error")):
         return "red"

@@ -14,6 +14,20 @@ from typer.core import TyperGroup
 
 from lark_bot.config import build_config_checks, get_settings, public_settings_summary
 from lark_bot.modules.claude.claude_service import build_claude_notification_from_json
+from lark_bot.modules.claude.claude_hook_adapter import (
+    handle_callback as handle_claude_callback,
+    read_stdin_payload as read_claude_stdin_payload,
+)
+from lark_bot.modules.claude.claude_hook_installer import (
+    check_hooks as check_claude_hooks,
+    install_hooks as install_claude_hooks,
+    uninstall_hooks as uninstall_claude_hooks,
+)
+from lark_bot.modules.claude.claude_tui import (
+    ClaudeTuiLauncher,
+    ClaudeTuiOptions,
+    disabled_hook_environment,
+)
 from lark_bot.modules.codex.codex_hook_adapter import forward_existing_notify, handle_callback, read_stdin_payload
 from lark_bot.modules.codex.codex_tui import CodexTuiLauncher, CodexTuiOptions
 from lark_bot.modules.task.task_detector import detect_output
@@ -55,6 +69,47 @@ class _CodexFallbackGroup(TyperGroup):
         )
 
 
+def _extract_claude_wrapper_options(
+    args: Sequence[str],
+    *,
+    no_lark: bool,
+) -> tuple[list[str], bool]:
+    native_args: list[str] = []
+    for arg in args:
+        if arg == "--no-lark":
+            no_lark = True
+        else:
+            native_args.append(arg)
+    return native_args, no_lark
+
+
+class _ClaudeFallbackGroup(TyperGroup):
+    """Treat unknown Claude subcommands/options as native CLI arguments."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+
+        @click.pass_context
+        def forward(sub_ctx: click.Context) -> None:
+            parent = sub_ctx.parent
+            no_lark = bool(parent and parent.params.get("no_lark"))
+            args, no_lark = _extract_claude_wrapper_options(
+                [cmd_name, *sub_ctx.args],
+                no_lark=no_lark,
+            )
+            _run_claude_tui(args, no_lark=no_lark)
+
+        return click.Command(
+            name=cmd_name,
+            callback=forward,
+            add_help_option=False,
+            context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+            hidden=True,
+        )
+
+
 codex_app = typer.Typer(
     cls=_CodexFallbackGroup,
     help="Launch native Codex or manage unattended jobs.",
@@ -64,9 +119,21 @@ codex_app = typer.Typer(
 )
 job_app = typer.Typer(help="Manage unattended Codex sessions through the local daemon.")
 hooks_app = typer.Typer(help="Manage project Codex hooks.")
+claude_app = typer.Typer(
+    cls=_ClaudeFallbackGroup,
+    help="Launch native Claude Code or manage unattended jobs.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+claude_job_app = typer.Typer(help="Manage unattended Claude sessions through the local daemon.")
+claude_hooks_app = typer.Typer(help="Manage project Claude hooks.")
 app.add_typer(codex_app, name="codex")
+app.add_typer(claude_app, name="claude")
 codex_app.add_typer(job_app, name="job")
 codex_app.add_typer(hooks_app, name="hooks")
+claude_app.add_typer(claude_job_app, name="job")
+claude_app.add_typer(claude_hooks_app, name="hooks")
 
 REMOTE_RESUME_PICKER_MESSAGE = (
     "Use resume --last or an explicit session ID; the remote session picker "
@@ -228,7 +295,35 @@ def daemon_command(
     )
 
 
+def _agent_daemon_request(
+    agent: str,
+    method: str,
+    path: str,
+    *,
+    json_body: dict | None = None,
+) -> object:
+    settings = get_settings()
+    try:
+        token = ensure_daemon_token(settings.daemon_token_path)
+        response = httpx.request(
+            method,
+            f"http://{settings.daemon_host}:{settings.daemon_port}/api/v1/agents/{agent}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=json_body,
+            timeout=min(settings.http_timeout_seconds, 10.0),
+        )
+        response.raise_for_status()
+        return response.json()
+    except (OSError, RuntimeError, httpx.HTTPError) as error:
+        raise typer.BadParameter(f"Local {agent.title()} daemon request failed ({type(error).__name__}).") from None
+
+
+# Descriptive alias used by integrations that call the generic helper directly.
+_daemon_agent_request = _agent_daemon_request
+
+
 def _daemon_request(method: str, path: str, *, json_body: dict | None = None) -> object:
+    """Backward-compatible Codex daemon request wrapper."""
     settings = get_settings()
     try:
         token = ensure_daemon_token(settings.daemon_token_path)
@@ -326,6 +421,22 @@ def _run_codex_tui(args: Sequence[str], *, no_lark: bool = False) -> None:
     raise typer.Exit(exit_code)
 
 
+def _run_claude_tui(args: Sequence[str], *, no_lark: bool = False) -> None:
+    settings = get_settings()
+    environment = disabled_hook_environment() if no_lark else None
+    try:
+        exit_code = ClaudeTuiLauncher().run(
+            ClaudeTuiOptions(
+                args=list(args),
+                claude_path=getattr(settings, "claude_path", "claude"),
+                env=environment,
+            )
+        )
+    except FileNotFoundError as error:
+        raise typer.BadParameter(str(error)) from None
+    raise typer.Exit(exit_code)
+
+
 @codex_app.callback()
 def codex_command(
     ctx: typer.Context,
@@ -335,6 +446,21 @@ def codex_command(
 
     if ctx.invoked_subcommand is None:
         _run_codex_tui(ctx.args, no_lark=no_lark)
+
+
+@claude_app.callback()
+def claude_command(
+    ctx: typer.Context,
+    no_lark: bool = typer.Option(
+        False,
+        "--no-lark",
+        help="Launch Claude directly without Claude hook delivery.",
+    ),
+) -> None:
+    """Launch the native Claude Code TUI when no subcommand is selected."""
+    if ctx.invoked_subcommand is None:
+        args, no_lark = _extract_claude_wrapper_options(ctx.args, no_lark=no_lark)
+        _run_claude_tui(args, no_lark=no_lark)
 
 
 @job_app.command("start")
@@ -387,6 +513,77 @@ def hooks_uninstall(project: Path = typer.Option(Path("."), "--project")) -> Non
     typer.echo(f"uninstalled: {uninstall_hooks(project)}")
 
 
+@claude_job_app.command("start")
+def claude_start(
+    prompt: str | None = typer.Argument(None),
+    name: str = typer.Option("task", "--name", "-n"),
+    cwd: Path = typer.Option(Path("."), "--cwd"),
+    model: str | None = typer.Option(None, "--model"),
+    permission: str | None = typer.Option(None, "--permission", "--permission-mode"),
+    sandbox: str = typer.Option("workspace-write", "--sandbox"),
+    resume: str | None = typer.Option(None, "--resume"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if sandbox not in {"read-only", "workspace-write"}:
+        raise typer.BadParameter("sandbox must be read-only or workspace-write")
+    text = sys.stdin.read() if prompt in {None, "-"} else prompt
+    result = _agent_daemon_request(
+        "claude",
+        "POST",
+        "/sessions",
+        json_body={
+            "name": name,
+            "cwd": str(cwd.resolve()),
+            "prompt": text,
+            "model": model,
+            "sandbox": sandbox,
+            "permission_mode": permission,
+            "resume_id": resume,
+        },
+    )
+    _emit_result(result, json_output)
+
+
+@claude_job_app.command("list")
+def claude_list(
+    status: str | None = typer.Option(None, "--status"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    query = f"?status={status}" if status else ""
+    _emit_result(_agent_daemon_request("claude", "GET", f"/sessions{query}"), json_output)
+
+
+@claude_job_app.command("show")
+def claude_show(session_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    _emit_result(_agent_daemon_request("claude", "GET", f"/sessions/{session_id}"), json_output)
+
+
+@claude_job_app.command("cancel")
+def claude_cancel(session_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    _emit_result(
+        _agent_daemon_request("claude", "POST", f"/sessions/{session_id}/cancel"),
+        json_output,
+    )
+
+
+@claude_hooks_app.command("install")
+def claude_hooks_install(project: Path = typer.Option(Path("."), "--project")) -> None:
+    typer.echo(f"installed: {install_claude_hooks(project)}")
+
+
+@claude_hooks_app.command("check")
+def claude_hooks_check(project: Path = typer.Option(Path("."), "--project")) -> None:
+    result = check_claude_hooks(project)
+    typer.echo(result.status)
+    if result.status != "installed":
+        raise typer.Exit(1)
+
+
+@claude_hooks_app.command("uninstall")
+def claude_hooks_uninstall(project: Path = typer.Option(Path("."), "--project")) -> None:
+    typer.echo(f"uninstalled: {uninstall_claude_hooks(project)}")
+
+
 @app.command(
     "codex-hook",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -406,3 +603,35 @@ def codex_hook(ctx: typer.Context) -> None:
         spool_dir=spool,
     )
     forward_existing_notify(argv=callback_argv, stdin=raw)
+
+
+def _daemon_agent_hook_request(agent: str, payload: dict[str, str]) -> None:
+    settings = get_settings()
+    token = ensure_daemon_token(settings.daemon_token_path)
+    response = httpx.post(
+        f"http://{settings.daemon_host}:{settings.daemon_port}/api/v1/agents/{agent}/hooks",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=min(settings.http_timeout_seconds, 0.25),
+    )
+    response.raise_for_status()
+
+
+@app.command(
+    "claude-hook",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def claude_hook(ctx: typer.Context) -> None:
+    """Forward a Claude project hook without blocking Claude Code."""
+    callback_argv = ["claude-hook", *ctx.args]
+    raw = read_claude_stdin_payload(callback_argv, sys.stdin.read)
+    try:
+        spool = get_settings().daemon_token_path.parent / "spool"
+    except Exception:
+        spool = Path(".lark-bot/spool")
+    handle_claude_callback(
+        argv=callback_argv,
+        stdin=raw,
+        sender=lambda payload: _daemon_agent_hook_request("claude", payload),
+        spool_dir=spool,
+    )
